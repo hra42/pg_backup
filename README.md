@@ -7,7 +7,7 @@ A robust Go application for PostgreSQL backups with strict error handling. Any f
 - **SSH-based remote backup execution** - Connects to production server and runs pg_dump
 - **Rsync file transfer** - Fast, efficient transfer with resume capability
 - **S3-compatible storage** - Upload backups to Garage or any S3-compatible storage
-- **Automatic retention management** - Clean up old backups based on retention policy
+- **Automatic retention management** - Keep only the N most recent backups
 - **Progress tracking** - Real-time progress for all long-running operations
 - **Structured logging** - Clear, parseable logs with context
 - **Graceful shutdown** - Handles SIGINT/SIGTERM with cleanup
@@ -45,7 +45,7 @@ s3:
   prefix: "postgres"
 
 backup:
-  retention_days: 30
+  retention_count: 7  # Keep 7 most recent backups
 ```
 
 ## Usage
@@ -86,7 +86,7 @@ backup:
 2. **Remote Backup** - Executes pg_dump with plain SQL format and gzip compression
 3. **File Transfer** - Downloads backup via rsync with compression and resume support
 4. **S3 Upload** - Uploads to S3-compatible storage with multipart support
-5. **Cleanup** - Removes temporary files and old backups per retention policy
+5. **Cleanup** - Removes temporary files and keeps only N most recent backups
 
 ## Cron Example
 

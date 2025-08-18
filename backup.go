@@ -241,7 +241,7 @@ func (bm *BackupManager) performCleanup(ctx context.Context, localBackupPath str
 		bm.logger.Info("Local backup file removed", slog.String("path", localBackupPath))
 	}
 
-	if err := bm.s3Client.CleanupOldBackups(ctx, bm.config.Backup.RetentionDays); err != nil {
+	if err := bm.s3Client.CleanupOldBackups(ctx, bm.config.Backup.RetentionCount); err != nil {
 		return fmt.Errorf("retention cleanup failed: %w", err)
 	}
 

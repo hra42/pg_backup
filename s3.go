@@ -128,82 +128,111 @@ func (s *S3Client) UploadFile(ctx context.Context, localPath string, progressFn 
 	return nil
 }
 
-func (s *S3Client) CleanupOldBackups(ctx context.Context, retentionDays int) error {
-	cutoffTime := time.Now().AddDate(0, 0, -retentionDays)
-
+func (s *S3Client) CleanupOldBackups(ctx context.Context, retentionCount int) error {
 	s.logger.Info("Starting backup cleanup",
-		slog.Int("retention_days", retentionDays),
-		slog.Time("cutoff", cutoffTime))
+		slog.Int("retention_count", retentionCount))
 
 	prefix := s.config.Prefix
 	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
 
+	// List all backup objects
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.config.Bucket),
 		Prefix: aws.String(prefix),
 	})
 
-	var deletedCount int
-	var errors []error
+	type backupInfo struct {
+		Key          *string
+		LastModified *time.Time
+	}
+	var allBackups []backupInfo
 
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			s.logger.Error("Failed to list objects", slog.String("error", err.Error()))
-			errors = append(errors, err)
-			continue
+			return fmt.Errorf("failed to list backups: %w", err)
 		}
-
-		var objectsToDelete []types.ObjectIdentifier
 
 		for _, obj := range page.Contents {
-			if obj.LastModified != nil && obj.LastModified.Before(cutoffTime) {
-				objectsToDelete = append(objectsToDelete, types.ObjectIdentifier{
-					Key: obj.Key,
+			// Only include files that match our backup pattern
+			if obj.Key != nil && strings.Contains(*obj.Key, "pg_backup_") {
+				allBackups = append(allBackups, backupInfo{
+					Key:          obj.Key,
+					LastModified: obj.LastModified,
 				})
-				s.logger.Debug("Marking for deletion",
-					slog.String("key", *obj.Key),
-					slog.Time("modified", *obj.LastModified))
 			}
 		}
+	}
 
-		if len(objectsToDelete) > 0 {
-			deleteInput := &s3.DeleteObjectsInput{
-				Bucket: aws.String(s.config.Bucket),
-				Delete: &types.Delete{
-					Objects: objectsToDelete,
-					Quiet:   aws.Bool(false),
-				},
-			}
-
-			deleteOutput, err := s.client.DeleteObjects(ctx, deleteInput)
-			if err != nil {
-				s.logger.Error("Failed to delete objects", slog.String("error", err.Error()))
-				errors = append(errors, err)
-			} else {
-				deletedCount += len(deleteOutput.Deleted)
-				for _, deleted := range deleteOutput.Deleted {
-					s.logger.Info("Deleted old backup", slog.String("key", *deleted.Key))
-				}
-				for _, failed := range deleteOutput.Errors {
-					s.logger.Error("Failed to delete object",
-						slog.String("key", *failed.Key),
-						slog.String("error", *failed.Message))
-					errors = append(errors, fmt.Errorf("delete failed for %s: %s", *failed.Key, *failed.Message))
+	// Sort by modification time (newest first)
+	for i := 0; i < len(allBackups)-1; i++ {
+		for j := i + 1; j < len(allBackups); j++ {
+			if allBackups[i].LastModified != nil && allBackups[j].LastModified != nil {
+				if allBackups[i].LastModified.Before(*allBackups[j].LastModified) {
+					allBackups[i], allBackups[j] = allBackups[j], allBackups[i]
 				}
 			}
+		}
+	}
+
+	s.logger.Info("Found backups", slog.Int("total", len(allBackups)))
+
+	// Keep only the most recent backups
+	if len(allBackups) <= retentionCount {
+		s.logger.Info("No backups to delete", 
+			slog.Int("current_count", len(allBackups)),
+			slog.Int("retention_count", retentionCount))
+		return nil
+	}
+
+	// Delete older backups
+	var objectsToDelete []types.ObjectIdentifier
+	for i := retentionCount; i < len(allBackups); i++ {
+		objectsToDelete = append(objectsToDelete, types.ObjectIdentifier{
+			Key: allBackups[i].Key,
+		})
+		s.logger.Debug("Marking for deletion",
+			slog.String("key", *allBackups[i].Key),
+			slog.Time("modified", *allBackups[i].LastModified))
+	}
+
+	if len(objectsToDelete) > 0 {
+		deleteInput := &s3.DeleteObjectsInput{
+			Bucket: aws.String(s.config.Bucket),
+			Delete: &types.Delete{
+				Objects: objectsToDelete,
+				Quiet:   aws.Bool(false),
+			},
+		}
+
+		deleteOutput, err := s.client.DeleteObjects(ctx, deleteInput)
+		if err != nil {
+			return fmt.Errorf("failed to delete old backups: %w", err)
+		}
+
+		for _, deleted := range deleteOutput.Deleted {
+			s.logger.Info("Deleted old backup", slog.String("key", *deleted.Key))
+		}
+		
+		var errors []error
+		for _, failed := range deleteOutput.Errors {
+			s.logger.Error("Failed to delete object",
+				slog.String("key", *failed.Key),
+				slog.String("error", *failed.Message))
+			errors = append(errors, fmt.Errorf("delete failed for %s: %s", *failed.Key, *failed.Message))
+		}
+		
+		if len(errors) > 0 {
+			return fmt.Errorf("cleanup completed with %d errors", len(errors))
 		}
 	}
 
 	s.logger.Info("Cleanup completed",
-		slog.Int("deleted_count", deletedCount),
-		slog.Int("error_count", len(errors)))
-
-	if len(errors) > 0 {
-		return fmt.Errorf("cleanup completed with %d errors", len(errors))
-	}
+		slog.Int("deleted_count", len(objectsToDelete)),
+		slog.Int("kept_count", retentionCount))
 
 	return nil
 }

@@ -44,7 +44,7 @@ type S3Config struct {
 
 type BackupConfig struct {
 	TempDir        string `yaml:"temp_dir"`
-	RetentionDays  int    `yaml:"retention_days"`
+	RetentionCount int    `yaml:"retention_count"`
 	CompressionLvl int    `yaml:"compression_level"`
 }
 
@@ -70,7 +70,7 @@ func LoadConfig(path string) (*Config, error) {
 		},
 		Backup: BackupConfig{
 			TempDir:        "/tmp",
-			RetentionDays:  30,
+			RetentionCount: 7,
 			CompressionLvl: 6,
 		},
 	}
@@ -129,8 +129,8 @@ func (c *Config) Validate() error {
 		c.S3.Region = "us-east-1"
 	}
 
-	if c.Backup.RetentionDays <= 0 {
-		c.Backup.RetentionDays = 30
+	if c.Backup.RetentionCount <= 0 {
+		c.Backup.RetentionCount = 7
 	}
 	if c.Backup.CompressionLvl < 0 || c.Backup.CompressionLvl > 9 {
 		c.Backup.CompressionLvl = 6

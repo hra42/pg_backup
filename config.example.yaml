@@ -31,7 +31,7 @@ s3:
 # Backup configuration
 backup:
   temp_dir: "/tmp"           # Temporary directory on prod server
-  retention_days: 30         # Keep backups for this many days
+  retention_count: 7         # Number of backups to keep
   compression_level: 6       # Compression level (0-9, 0=none, 9=max)
 
 # Operation timeouts

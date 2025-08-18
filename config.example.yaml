@@ -1,0 +1,42 @@
+# PostgreSQL Backup Configuration
+
+# SSH connection settings for the production server
+ssh:
+  host: "prod-server.example.com"
+  port: 22
+  username: "backup-user"
+  # Use either password or key_path for authentication
+  # password: "your-ssh-password"
+  key_path: "/home/user/.ssh/id_rsa"
+  # Optional: path to known_hosts file for host key verification
+  # known_hosts: "/home/user/.ssh/known_hosts"
+
+# PostgreSQL connection settings (as seen from the production server)
+postgres:
+  host: "localhost"  # PostgreSQL host from prod server's perspective
+  port: 5432
+  database: "production_db"
+  username: "postgres"
+  password: "your-postgres-password"
+
+# S3-compatible storage settings (Garage)
+s3:
+  endpoint: "https://s3.garage.example.com"
+  access_key_id: "your-access-key"
+  secret_access_key: "your-secret-key"
+  bucket: "backups"
+  prefix: "postgres"  # Optional: prefix for backup files
+  region: "garage"    # Default: us-east-1
+
+# Backup configuration
+backup:
+  temp_dir: "/tmp"           # Temporary directory on prod server
+  retention_days: 30         # Keep backups for this many days
+  compression_level: 6       # Compression level (0-9, 0=none, 9=max)
+
+# Operation timeouts
+timeouts:
+  ssh_connection: "30s"      # SSH connection timeout
+  backup_operation: "2h"     # pg_basebackup operation timeout
+  transfer: "1h"             # File transfer timeout
+  s3_upload: "2h"            # S3 upload timeout

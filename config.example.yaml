@@ -37,6 +37,16 @@ backup:
 # Operation timeouts
 timeouts:
   ssh_connection: "30s"      # SSH connection timeout
-  backup_operation: "2h"     # pg_basebackup operation timeout
+  backup_operation: "2h"     # pg_dump operation timeout
   transfer: "1h"             # File transfer timeout
   s3_upload: "2h"            # S3 upload timeout
+
+# Email notification settings (optional)
+# Requires: https://github.com/hra42/go-notification
+notification:
+  enabled: false                                           # Enable/disable notifications
+  binary_path: "/usr/local/bin/go-notification"          # Path to notification binary
+  api_key: "re_ZAgkjHiU_62z3UNLLbrEYtWoL3MqAU1fp"       # API key for notification service
+  from: "notifications@notifications.hra42.com"           # From email address
+  to: "henry@hra42.com"                                  # To email address
+  reply_to: "henryrausch@postrausch.tech"               # Reply-to address (optional)

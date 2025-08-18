@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	SSH      SSHConfig      `yaml:"ssh"`
-	Postgres PostgresConfig `yaml:"postgres"`
-	S3       S3Config       `yaml:"s3"`
-	Backup   BackupConfig   `yaml:"backup"`
-	Timeouts TimeoutConfig  `yaml:"timeouts"`
+	SSH          SSHConfig          `yaml:"ssh"`
+	Postgres     PostgresConfig     `yaml:"postgres"`
+	S3           S3Config           `yaml:"s3"`
+	Backup       BackupConfig       `yaml:"backup"`
+	Timeouts     TimeoutConfig      `yaml:"timeouts"`
+	Notification NotificationConfig `yaml:"notification"`
 }
 
 type SSHConfig struct {
@@ -55,6 +56,15 @@ type TimeoutConfig struct {
 	S3Upload      time.Duration `yaml:"s3_upload"`
 }
 
+type NotificationConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	BinaryPath  string `yaml:"binary_path"`
+	APIKey      string `yaml:"api_key"`
+	From        string `yaml:"from"`
+	To          string `yaml:"to"`
+	ReplyTo     string `yaml:"reply_to"`
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -72,6 +82,10 @@ func LoadConfig(path string) (*Config, error) {
 			TempDir:        "/tmp",
 			RetentionCount: 7,
 			CompressionLvl: 6,
+		},
+		Notification: NotificationConfig{
+			Enabled:    false,
+			BinaryPath: "/usr/local/bin/go-notification",
 		},
 	}
 
@@ -134,6 +148,22 @@ func (c *Config) Validate() error {
 	}
 	if c.Backup.CompressionLvl < 0 || c.Backup.CompressionLvl > 9 {
 		c.Backup.CompressionLvl = 6
+	}
+
+	// Validate notification config if enabled
+	if c.Notification.Enabled {
+		if c.Notification.BinaryPath == "" {
+			c.Notification.BinaryPath = "/usr/local/bin/go-notification"
+		}
+		if c.Notification.APIKey == "" {
+			return fmt.Errorf("notification API key is required when notifications are enabled")
+		}
+		if c.Notification.From == "" {
+			return fmt.Errorf("notification from address is required when notifications are enabled")
+		}
+		if c.Notification.To == "" {
+			return fmt.Errorf("notification to address is required when notifications are enabled")
+		}
 	}
 
 	return nil

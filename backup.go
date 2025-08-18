@@ -14,11 +14,13 @@ import (
 )
 
 type BackupManager struct {
-	config     *Config
-	sshClient  *SSHClient
-	s3Client   *S3Client
-	logger     *slog.Logger
-	cancelFunc context.CancelFunc
+	config             *Config
+	sshClient          *SSHClient
+	s3Client           *S3Client
+	notificationClient *NotificationClient
+	logger             *slog.Logger
+	cancelFunc         context.CancelFunc
+	backupSize         int64
 }
 
 func NewBackupManager(config *Config, logger *slog.Logger) (*BackupManager, error) {
@@ -32,11 +34,14 @@ func NewBackupManager(config *Config, logger *slog.Logger) (*BackupManager, erro
 		return nil, fmt.Errorf("failed to create S3 client: %w", err)
 	}
 
+	notificationClient := NewNotificationClient(&config.Notification, logger)
+
 	return &BackupManager{
-		config:    config,
-		sshClient: sshClient,
-		s3Client:  s3Client,
-		logger:    logger,
+		config:             config,
+		sshClient:          sshClient,
+		s3Client:           s3Client,
+		notificationClient: notificationClient,
+		logger:             logger,
 	}, nil
 }
 
@@ -46,6 +51,7 @@ func (bm *BackupManager) SetCancelFunc(cancel context.CancelFunc) {
 
 func (bm *BackupManager) Run(ctx context.Context, dryRun bool) error {
 	defer bm.cleanup()
+	startTime := time.Now()
 
 	if dryRun {
 		bm.logger.Info("DRY RUN MODE - No actual backup will be performed")
@@ -58,18 +64,27 @@ func (bm *BackupManager) Run(ctx context.Context, dryRun bool) error {
 	localBackupPath := filepath.Join(os.TempDir(), backupFileName)
 
 	if err := bm.connectSSH(); err != nil {
+		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, getBackupStage(err))
 		return err
 	}
 
 	if err := bm.createRemoteBackup(remoteBackupPath); err != nil {
+		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, getBackupStage(err))
 		return err
 	}
 
 	if err := bm.transferBackup(remoteBackupPath, localBackupPath); err != nil {
+		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, getBackupStage(err))
 		return err
 	}
 
+	// Get backup size for notification
+	if stat, err := os.Stat(localBackupPath); err == nil {
+		bm.backupSize = stat.Size()
+	}
+
 	if err := bm.uploadToS3(ctx, localBackupPath); err != nil {
+		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, getBackupStage(err))
 		return err
 	}
 
@@ -78,6 +93,15 @@ func (bm *BackupManager) Run(ctx context.Context, dryRun bool) error {
 	}
 
 	bm.logger.Info("Backup completed successfully", slog.String("file", backupFileName))
+	
+	// Send success notification
+	if bm.notificationClient != nil {
+		duration := time.Since(startTime)
+		if err := bm.notificationClient.SendBackupSuccess(bm.config.Postgres.Database, duration, bm.backupSize); err != nil {
+			bm.logger.Warn("Failed to send success notification", slog.String("error", err.Error()))
+		}
+	}
+	
 	return nil
 }
 

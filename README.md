@@ -8,6 +8,7 @@ A robust Go application for PostgreSQL backups with strict error handling. Any f
 - **Rsync file transfer** - Fast, efficient transfer with resume capability
 - **S3-compatible storage** - Upload backups to Garage or any S3-compatible storage
 - **Automatic retention management** - Keep only the N most recent backups
+- **Email notifications** - Success/failure notifications via go-notification
 - **Progress tracking** - Real-time progress for all long-running operations
 - **Structured logging** - Clear, parseable logs with context
 - **Graceful shutdown** - Handles SIGINT/SIGTERM with cleanup
@@ -46,6 +47,12 @@ s3:
 
 backup:
   retention_count: 7  # Keep 7 most recent backups
+
+notification:
+  enabled: true
+  api_key: "your-api-key"
+  from: "notifications@example.com"
+  to: "admin@example.com"
 ```
 
 ## Usage
@@ -104,6 +111,7 @@ For daily backups at 2 AM:
 - rsync installed on local machine
 - S3-compatible storage (Garage, MinIO, AWS S3, etc.)
 - sshpass (optional, for password authentication with rsync)
+- [go-notification](https://github.com/hra42/go-notification) binary (optional, for email notifications)
 
 ## Security Notes
 

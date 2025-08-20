@@ -59,7 +59,11 @@ type TimeoutConfig struct {
 
 type RestoreConfig struct {
 	Enabled        bool   `yaml:"enabled"`
+	TargetHost     string `yaml:"target_host"`
+	TargetPort     int    `yaml:"target_port"`
 	TargetDatabase string `yaml:"target_database"`
+	TargetUsername string `yaml:"target_username"`
+	TargetPassword string `yaml:"target_password"`
 	DropExisting   bool   `yaml:"drop_existing"`
 	CreateDB       bool   `yaml:"create_db"`
 	Owner          string `yaml:"owner"`

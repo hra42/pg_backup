@@ -139,6 +139,97 @@ func (r *RsyncClient) DownloadFile(remotePath, localPath string, timeout time.Du
 	return nil
 }
 
+func (r *RsyncClient) UploadFile(localPath, remotePath string, timeout time.Duration, progressFn func(int64, int64)) error {
+	// Verify local file exists
+	stat, err := os.Stat(localPath)
+	if err != nil {
+		return fmt.Errorf("local file not found: %w", err)
+	}
+
+	// Build rsync command
+	sshCmd := r.buildSSHCommand()
+	remoteSpec := fmt.Sprintf("%s@%s:%s", r.config.Username, r.config.Host, remotePath)
+	
+	args := []string{
+		"-avz",          // archive, verbose, compress
+		"--progress",    // show progress
+		"--partial",     // keep partial files
+		"-e", sshCmd,    // SSH command
+		localPath,
+		remoteSpec,
+	}
+
+	r.logger.Info("Starting rsync upload",
+		slog.String("local", localPath),
+		slog.String("remote", remotePath),
+		slog.Int64("size", stat.Size()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "rsync", args...)
+	
+	// Capture stderr for errors
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	// Capture stdout for progress
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start rsync: %w", err)
+	}
+
+	// Parse progress output
+	progressRegex := regexp.MustCompile(`\s+(\d+)\s+(\d+)%`)
+	scanner := bufio.NewScanner(stdout)
+	
+	go func() {
+		totalSize := stat.Size()
+		for scanner.Scan() {
+			line := scanner.Text()
+			r.logger.Debug("rsync output", slog.String("line", line))
+			
+			// Parse progress info
+			if matches := progressRegex.FindStringSubmatch(line); len(matches) >= 3 {
+				if transferred, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
+					if progressFn != nil {
+						progressFn(transferred, totalSize)
+					}
+				}
+			}
+		}
+	}()
+
+	// Collect stderr
+	stderrScanner := bufio.NewScanner(stderr)
+	var stderrLines []string
+	go func() {
+		for stderrScanner.Scan() {
+			stderrLines = append(stderrLines, stderrScanner.Text())
+		}
+	}()
+
+	// Wait for command to complete
+	if err := cmd.Wait(); err != nil {
+		stderrOutput := strings.Join(stderrLines, "\n")
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("rsync timed out after %v", timeout)
+		}
+		return fmt.Errorf("rsync failed: %w\nstderr: %s", err, stderrOutput)
+	}
+
+	r.logger.Info("Rsync upload completed successfully",
+		slog.String("remote", remotePath))
+
+	return nil
+}
+
 func (r *RsyncClient) buildSSHCommand() string {
 	sshArgs := []string{"ssh"}
 	

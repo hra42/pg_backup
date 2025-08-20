@@ -208,7 +208,7 @@ func (rm *RestoreManager) performRestore(remoteBackupPath string) error {
 		return fmt.Errorf("pg_restore not found on remote server")
 	}
 
-	pgPassword := fmt.Sprintf("PGPASSWORD='%s'", rm.config.Postgres.Password)
+	pgPassword := fmt.Sprintf("PGPASSWORD='%s'", rm.config.Restore.TargetPassword)
 
 	// Drop existing database if configured
 	if rm.config.Restore.DropExisting {
@@ -217,9 +217,9 @@ func (rm *RestoreManager) performRestore(remoteBackupPath string) error {
 		dropCmd := fmt.Sprintf(
 			"%s psql -h %s -p %d -U %s -d postgres -c \"DROP DATABASE IF EXISTS %s;\"",
 			pgPassword,
-			rm.config.Postgres.Host,
-			rm.config.Postgres.Port,
-			rm.config.Postgres.Username,
+			rm.config.Restore.TargetHost,
+			rm.config.Restore.TargetPort,
+			rm.config.Restore.TargetUsername,
 			rm.config.Restore.TargetDatabase,
 		)
 		
@@ -235,9 +235,9 @@ func (rm *RestoreManager) performRestore(remoteBackupPath string) error {
 		createCmd := fmt.Sprintf(
 			"%s psql -h %s -p %d -U %s -d postgres -c \"CREATE DATABASE %s",
 			pgPassword,
-			rm.config.Postgres.Host,
-			rm.config.Postgres.Port,
-			rm.config.Postgres.Username,
+			rm.config.Restore.TargetHost,
+			rm.config.Restore.TargetPort,
+			rm.config.Restore.TargetUsername,
 			rm.config.Restore.TargetDatabase,
 		)
 		
@@ -259,9 +259,9 @@ func (rm *RestoreManager) performRestore(remoteBackupPath string) error {
 	restoreCmd := fmt.Sprintf(
 		"%s pg_restore -h %s -p %d -U %s -d %s --verbose --no-owner --no-privileges --no-tablespaces",
 		pgPassword,
-		rm.config.Postgres.Host,
-		rm.config.Postgres.Port,
-		rm.config.Postgres.Username,
+		rm.config.Restore.TargetHost,
+		rm.config.Restore.TargetPort,
+		rm.config.Restore.TargetUsername,
 		rm.config.Restore.TargetDatabase,
 	)
 
@@ -294,9 +294,9 @@ func (rm *RestoreManager) performRestore(remoteBackupPath string) error {
 	verifyCmd := fmt.Sprintf(
 		"%s psql -h %s -p %d -U %s -d %s -t -c \"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';\"",
 		pgPassword,
-		rm.config.Postgres.Host,
-		rm.config.Postgres.Port,
-		rm.config.Postgres.Username,
+		rm.config.Restore.TargetHost,
+		rm.config.Restore.TargetPort,
+		rm.config.Restore.TargetUsername,
 		rm.config.Restore.TargetDatabase,
 	)
 

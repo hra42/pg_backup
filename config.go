@@ -172,8 +172,21 @@ func (c *Config) Validate() error {
 
 	// Validate restore config if enabled
 	if c.Restore.Enabled {
+		// Default to source database settings if not specified
+		if c.Restore.TargetHost == "" {
+			c.Restore.TargetHost = c.Postgres.Host
+		}
+		if c.Restore.TargetPort == 0 {
+			c.Restore.TargetPort = c.Postgres.Port
+		}
 		if c.Restore.TargetDatabase == "" {
 			c.Restore.TargetDatabase = c.Postgres.Database
+		}
+		if c.Restore.TargetUsername == "" {
+			c.Restore.TargetUsername = c.Postgres.Username
+		}
+		if c.Restore.TargetPassword == "" {
+			c.Restore.TargetPassword = c.Postgres.Password
 		}
 		if c.Restore.Jobs <= 0 {
 			c.Restore.Jobs = 1

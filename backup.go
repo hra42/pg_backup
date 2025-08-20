@@ -58,8 +58,8 @@ func (bm *BackupManager) Run(ctx context.Context, dryRun bool) error {
 		return bm.validateConfiguration()
 	}
 
-	timestamp := time.Now().UTC().Format("20060102-150405")
-	backupFileName := fmt.Sprintf("pg_backup_%s_%s.sql.gz", bm.config.Postgres.Database, timestamp)
+	timestamp := time.Now().UTC().Format("20060102_150405")
+	backupFileName := fmt.Sprintf("backup_%s.dump", timestamp)
 	remoteBackupPath := filepath.Join(bm.config.Backup.TempDir, backupFileName)
 	localBackupPath := filepath.Join(os.TempDir(), backupFileName)
 
@@ -158,10 +158,10 @@ func (bm *BackupManager) createRemoteBackup(remoteBackupPath string) error {
 	// Use pg_dump for better compatibility (doesn't require replication privileges)
 	pgPassword := fmt.Sprintf("PGPASSWORD='%s'", bm.config.Postgres.Password)
 	
-	// Create pg_dump command with plain SQL format and gzip compression
-	// Plain format is more universally compatible and can be restored with psql
+	// Create pg_dump command with custom format and compression
+	// Custom format allows for parallel restore and selective restoration
 	pgDumpCmd := fmt.Sprintf(
-		"%s pg_dump -h %s -p %d -U %s -d %s --verbose --no-password | gzip -%d > %s 2>&1",
+		"%s pg_dump -h %s -p %d -U %s -d %s --verbose --no-password --no-owner --no-privileges --no-tablespaces --no-security-labels --format=custom --compress=%d --file=%s 2>&1",
 		pgPassword,
 		bm.config.Postgres.Host,
 		bm.config.Postgres.Port,

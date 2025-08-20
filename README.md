@@ -51,7 +51,12 @@ backup:
 
 restore:
   enabled: true
-  target_database: "restored_db"
+  # Optional: specify different target PostgreSQL server
+  target_host: "staging-server.example.com"  # Defaults to postgres.host
+  target_port: 5432                          # Defaults to postgres.port
+  target_database: "restored_db"              # Defaults to postgres.database
+  target_username: "restore_user"             # Defaults to postgres.username
+  target_password: "restore_password"         # Defaults to postgres.password
   drop_existing: true
   create_db: true
   jobs: 4  # Parallel restore jobs
@@ -99,6 +104,26 @@ notification:
 ```bash
 ./pg_backup -config config.yaml -restore -backup-key "backup-20240101-120000-backup_20240101_120000.dump"
 ```
+
+### Restore to Different PostgreSQL Server
+
+You can restore backups to a different PostgreSQL instance by specifying target connection settings in the configuration:
+
+```yaml
+restore:
+  enabled: true
+  target_host: "staging.example.com"     # Different server
+  target_port: 5432
+  target_database: "staging_db"          # Different database name
+  target_username: "staging_user"
+  target_password: "staging_password"
+```
+
+This is useful for:
+- Restoring production backups to staging/development environments
+- Migrating databases between servers
+- Creating test databases from production backups
+- Disaster recovery to standby servers
 
 ## Exit Codes
 

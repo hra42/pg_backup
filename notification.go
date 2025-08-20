@@ -117,6 +117,50 @@ func formatBytes(bytes int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
+func (n *NotificationClient) SendRestoreSuccess(database string, duration time.Duration, backupKey string) error {
+	if !n.config.Enabled {
+		return nil
+	}
+
+	subject := fmt.Sprintf("✓ Restore Successful: %s", database)
+	
+	text := fmt.Sprintf(
+		"PostgreSQL restore completed successfully.\n\n"+
+			"Database: %s\n"+
+			"Backup Used: %s\n"+
+			"Duration: %s\n"+
+			"Timestamp: %s\n",
+		database,
+		backupKey,
+		duration.Round(time.Second),
+		time.Now().UTC().Format(time.RFC3339),
+	)
+
+	return n.sendNotification(subject, text)
+}
+
+func (n *NotificationClient) SendRestoreFailure(database string, err error, stage string) error {
+	if !n.config.Enabled {
+		return nil
+	}
+
+	subject := fmt.Sprintf("✗ Restore Failed: %s", database)
+	
+	text := fmt.Sprintf(
+		"PostgreSQL restore failed.\n\n"+
+			"Database: %s\n"+
+			"Failed Stage: %s\n"+
+			"Error: %s\n"+
+			"Timestamp: %s\n",
+		database,
+		stage,
+		err.Error(),
+		time.Now().UTC().Format(time.RFC3339),
+	)
+
+	return n.sendNotification(subject, text)
+}
+
 func getBackupStage(err error) string {
 	errStr := err.Error()
 	if strings.Contains(errStr, "exit code 2") || strings.Contains(errStr, "SSH") {

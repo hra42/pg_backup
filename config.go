@@ -13,6 +13,7 @@ type Config struct {
 	Postgres     PostgresConfig     `yaml:"postgres"`
 	S3           S3Config           `yaml:"s3"`
 	Backup       BackupConfig       `yaml:"backup"`
+	Restore      RestoreConfig      `yaml:"restore"`
 	Timeouts     TimeoutConfig      `yaml:"timeouts"`
 	Notification NotificationConfig `yaml:"notification"`
 }
@@ -56,6 +57,15 @@ type TimeoutConfig struct {
 	S3Upload      time.Duration `yaml:"s3_upload"`
 }
 
+type RestoreConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	TargetDatabase string `yaml:"target_database"`
+	DropExisting   bool   `yaml:"drop_existing"`
+	CreateDB       bool   `yaml:"create_db"`
+	Owner          string `yaml:"owner"`
+	Jobs           int    `yaml:"jobs"`
+}
+
 type NotificationConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	BinaryPath  string `yaml:"binary_path"`
@@ -82,6 +92,12 @@ func LoadConfig(path string) (*Config, error) {
 			TempDir:        "/tmp",
 			RetentionCount: 7,
 			CompressionLvl: 6,
+		},
+		Restore: RestoreConfig{
+			Enabled:      false,
+			DropExisting: false,
+			CreateDB:     false,
+			Jobs:         1,
 		},
 		Notification: NotificationConfig{
 			Enabled:    false,
@@ -148,6 +164,19 @@ func (c *Config) Validate() error {
 	}
 	if c.Backup.CompressionLvl < 0 || c.Backup.CompressionLvl > 9 {
 		c.Backup.CompressionLvl = 6
+	}
+
+	// Validate restore config if enabled
+	if c.Restore.Enabled {
+		if c.Restore.TargetDatabase == "" {
+			c.Restore.TargetDatabase = c.Postgres.Database
+		}
+		if c.Restore.Jobs <= 0 {
+			c.Restore.Jobs = 1
+		}
+		if c.Restore.Jobs > 8 {
+			c.Restore.Jobs = 8
+		}
 	}
 
 	// Validate notification config if enabled

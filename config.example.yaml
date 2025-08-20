@@ -41,6 +41,15 @@ timeouts:
   transfer: "1h"             # File transfer timeout
   s3_upload: "2h"            # S3 upload timeout
 
+# Restore configuration (optional)
+restore:
+  enabled: false             # Enable/disable restore functionality
+  target_database: ""        # Target database name (defaults to source database)
+  drop_existing: false       # Drop existing database before restore
+  create_db: false          # Create database if it doesn't exist
+  owner: ""                 # Database owner (optional, used when create_db is true)
+  jobs: 1                   # Number of parallel jobs for restore (1-8)
+
 # Email notification settings (optional)
 # Requires: https://github.com/hra42/go-notification
 notification:

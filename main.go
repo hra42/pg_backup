@@ -20,11 +20,14 @@ var (
 
 func main() {
 	var (
-		configPath  = flag.String("config", "config.yaml", "Path to configuration file")
-		dryRun      = flag.Bool("dry-run", false, "Test configuration without performing backup")
-		showVersion = flag.Bool("version", false, "Show version information")
-		logLevel    = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-		jsonLogs    = flag.Bool("json-logs", false, "Output logs in JSON format")
+		configPath    = flag.String("config", "config.yaml", "Path to configuration file")
+		dryRun        = flag.Bool("dry-run", false, "Test configuration without performing backup")
+		showVersion   = flag.Bool("version", false, "Show version information")
+		logLevel      = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+		jsonLogs      = flag.Bool("json-logs", false, "Output logs in JSON format")
+		restoreMode   = flag.Bool("restore", false, "Run in restore mode")
+		listBackups   = flag.Bool("list-backups", false, "List available backups")
+		backupKey     = flag.String("backup-key", "", "Specific backup key to restore (optional, uses latest if not specified)")
 	)
 	flag.Parse()
 
@@ -37,11 +40,6 @@ func main() {
 	}
 
 	logger := setupLogger(*logLevel, *jsonLogs)
-
-	logger.Info("Starting pg_backup",
-		slog.String("version", version),
-		slog.String("config", *configPath),
-		slog.Bool("dry_run", *dryRun))
 
 	config, err := LoadConfig(*configPath)
 	if err != nil {
@@ -64,6 +62,62 @@ func main() {
 		logger.Error("Forced shutdown after timeout")
 		os.Exit(130)
 	}()
+
+	// Handle restore mode
+	if *restoreMode || *listBackups {
+		if !config.Restore.Enabled && !*listBackups {
+			logger.Error("Restore feature is not enabled in configuration")
+			os.Exit(1)
+		}
+
+		restoreManager, err := NewRestoreManager(config, logger)
+		if err != nil {
+			logger.Error("Failed to initialize restore manager", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+
+		if *listBackups {
+			logger.Info("Listing available backups")
+			backups, err := restoreManager.ListAvailableBackups(ctx)
+			if err != nil {
+				logger.Error("Failed to list backups", slog.String("error", err.Error()))
+				os.Exit(1)
+			}
+
+			if len(backups) == 0 {
+				logger.Info("No backups found")
+			} else {
+				logger.Info("Available backups:")
+				for i, backup := range backups {
+					fmt.Printf("%d. %s\n", i+1, backup)
+				}
+			}
+			os.Exit(0)
+		}
+
+		logger.Info("Starting restore",
+			slog.String("version", version),
+			slog.String("config", *configPath),
+			slog.String("backup_key", *backupKey))
+
+		startTime := time.Now()
+		if err := restoreManager.Run(ctx, *backupKey); err != nil {
+			logger.Error("Restore failed",
+				slog.String("error", err.Error()),
+				slog.Duration("duration", time.Since(startTime)))
+			os.Exit(1)
+		}
+
+		logger.Info("Restore completed successfully",
+			slog.Duration("duration", time.Since(startTime)))
+		os.Exit(0)
+	}
+
+	// Normal backup mode
+	logger.Info("Starting pg_backup",
+		slog.String("version", version),
+		slog.String("config", *configPath),
+		slog.Bool("dry_run", *dryRun))
 
 	backupManager, err := NewBackupManager(config, logger)
 	if err != nil {

@@ -1,14 +1,15 @@
-# PostgreSQL Backup Tool
+# PostgreSQL Backup & Restore Tool
 
-A robust Go application for PostgreSQL backups with strict error handling. Any failure immediately terminates the process with appropriate error reporting.
+A robust Go application for PostgreSQL backups and restores with strict error handling. Any failure immediately terminates the process with appropriate error reporting.
 
 ## Features
 
 - **SSH-based remote backup execution** - Connects to production server and runs pg_dump
+- **Database restore capability** - Restore backups from S3 to any PostgreSQL instance
 - **Rsync file transfer** - Fast, efficient transfer with resume capability
-- **S3-compatible storage** - Upload backups to Garage or any S3-compatible storage
+- **S3-compatible storage** - Upload/download backups to/from Garage or any S3-compatible storage
 - **Automatic retention management** - Keep only the N most recent backups
-- **Email notifications** - Success/failure notifications via go-notification
+- **Email notifications** - Success/failure notifications via go-notification for both backup and restore
 - **Progress tracking** - Real-time progress for all long-running operations
 - **Structured logging** - Clear, parseable logs with context
 - **Graceful shutdown** - Handles SIGINT/SIGTERM with cleanup
@@ -48,6 +49,13 @@ s3:
 backup:
   retention_count: 7  # Keep 7 most recent backups
 
+restore:
+  enabled: true
+  target_database: "restored_db"
+  drop_existing: true
+  create_db: true
+  jobs: 4  # Parallel restore jobs
+
 notification:
   enabled: true
   api_key: "your-api-key"
@@ -77,6 +85,21 @@ notification:
 ./pg_backup -config config.yaml -json-logs
 ```
 
+### List available backups
+```bash
+./pg_backup -config config.yaml -list-backups
+```
+
+### Restore latest backup
+```bash
+./pg_backup -config config.yaml -restore
+```
+
+### Restore specific backup
+```bash
+./pg_backup -config config.yaml -restore -backup-key "backup-20240101-120000-backup_20240101_120000.dump"
+```
+
 ## Exit Codes
 
 - `0` - Success
@@ -87,13 +110,22 @@ notification:
 - `5` - S3 upload failed
 - `6` - Cleanup failed (critical cleanup only)
 
-## Workflow
+## Backup Workflow
 
 1. **SSH Connection** - Establishes secure connection to production server
-2. **Remote Backup** - Executes pg_dump with plain SQL format and gzip compression
+2. **Remote Backup** - Executes pg_dump with custom format and compression
 3. **File Transfer** - Downloads backup via rsync with compression and resume support
 4. **S3 Upload** - Uploads to S3-compatible storage with multipart support
 5. **Cleanup** - Removes temporary files and keeps only N most recent backups
+
+## Restore Workflow
+
+1. **Backup Selection** - Lists or selects backup from S3 storage
+2. **S3 Download** - Downloads backup file from S3 to local system
+3. **SSH Connection** - Establishes connection to target server
+4. **File Transfer** - Uploads backup to target server via rsync
+5. **Database Restore** - Executes pg_restore with configurable options
+6. **Cleanup** - Removes temporary files from both local and remote systems
 
 ## Cron Example
 

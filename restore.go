@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -19,9 +21,29 @@ type RestoreManager struct {
 }
 
 func NewRestoreManager(config *Config, logger *slog.Logger) (*RestoreManager, error) {
-	sshClient, err := NewSSHClient(&config.SSH, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create SSH client: %w", err)
+	var sshClient *SSHClient
+	var err error
+	
+	// Check if SSH is needed for restore
+	useSSH := true
+	if config.Restore.UseSSH != nil {
+		useSSH = *config.Restore.UseSSH
+	}
+	
+	if useSSH {
+		// Use restore SSH config if provided, otherwise use backup SSH config
+		sshConfig := config.Restore.SSH
+		if sshConfig == nil {
+			sshConfig = &config.SSH
+		}
+		
+		sshClient, err = NewSSHClient(sshConfig, logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create SSH client for restore: %w", err)
+		}
+	} else {
+		logger.Info("Local restore mode - SSH connection disabled")
+		sshClient = nil
 	}
 
 	s3Client, err := NewS3Client(&config.S3, logger)
@@ -71,22 +93,33 @@ func (rm *RestoreManager) Run(ctx context.Context, backupKey string) error {
 	}
 	defer os.Remove(localBackupPath)
 
-	// Connect to SSH
-	if err := rm.connectSSH(); err != nil {
-		rm.notificationClient.SendRestoreFailure(rm.config.Restore.TargetDatabase, err, "ssh_connection")
-		return err
-	}
+	// Check if we're using SSH or local restore
+	useSSH := rm.sshClient != nil
+	var restoreFilePath string
+	
+	if useSSH {
+		// Connect to SSH
+		if err := rm.connectSSH(); err != nil {
+			rm.notificationClient.SendRestoreFailure(rm.config.Restore.TargetDatabase, err, "ssh_connection")
+			return err
+		}
 
-	// Transfer backup to remote server
-	remoteBackupPath := filepath.Join(rm.config.Backup.TempDir, filepath.Base(backupKey))
-	if err := rm.transferToRemote(localBackupPath, remoteBackupPath); err != nil {
-		rm.notificationClient.SendRestoreFailure(rm.config.Restore.TargetDatabase, err, "transfer")
-		return err
+		// Transfer backup to remote server
+		remoteBackupPath := filepath.Join(rm.config.Backup.TempDir, filepath.Base(backupKey))
+		if err := rm.transferToRemote(localBackupPath, remoteBackupPath); err != nil {
+			rm.notificationClient.SendRestoreFailure(rm.config.Restore.TargetDatabase, err, "transfer")
+			return err
+		}
+		defer rm.sshClient.RemoveRemoteFile(remoteBackupPath)
+		restoreFilePath = remoteBackupPath
+	} else {
+		// Local restore - use the downloaded file directly
+		rm.logger.Info("Using local file for restore", slog.String("path", localBackupPath))
+		restoreFilePath = localBackupPath
 	}
-	defer rm.sshClient.RemoveRemoteFile(remoteBackupPath)
 
 	// Perform restore
-	if err := rm.performRestore(remoteBackupPath); err != nil {
+	if err := rm.performRestore(restoreFilePath); err != nil {
 		rm.notificationClient.SendRestoreFailure(rm.config.Restore.TargetDatabase, err, "restore")
 		return err
 	}
@@ -119,7 +152,19 @@ func (rm *RestoreManager) ListAvailableBackups(ctx context.Context) ([]string, e
 }
 
 func (rm *RestoreManager) connectSSH() error {
-	rm.logger.Info("Establishing SSH connection for restore")
+	if rm.sshClient == nil {
+		return fmt.Errorf("SSH client not initialized for local restore")
+	}
+	
+	// Log which server we're connecting to
+	sshConfig := rm.config.Restore.SSH
+	if sshConfig == nil {
+		sshConfig = &rm.config.SSH
+	}
+	rm.logger.Info("Establishing SSH connection for restore",
+		slog.String("host", sshConfig.Host),
+		slog.Int("port", sshConfig.Port),
+		slog.String("user", sshConfig.Username))
 	if err := rm.sshClient.Connect(rm.config.Timeouts.SSHConnection); err != nil {
 		return fmt.Errorf("SSH connection failed: %w", err)
 	}
@@ -161,7 +206,12 @@ func (rm *RestoreManager) transferToRemote(localPath, remotePath string) error {
 		slog.String("local", localPath),
 		slog.String("remote", remotePath))
 
-	rsyncClient := NewRsyncClient(&rm.config.SSH, rm.logger)
+	// Use restore SSH config if provided, otherwise use backup SSH config
+	sshConfig := rm.config.Restore.SSH
+	if sshConfig == nil {
+		sshConfig = &rm.config.SSH
+	}
+	rsyncClient := NewRsyncClient(sshConfig, rm.logger)
 	
 	lastProgress := time.Now()
 	err := rsyncClient.UploadFile(localPath, remotePath, rm.config.Timeouts.Transfer, 

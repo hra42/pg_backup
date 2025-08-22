@@ -160,8 +160,9 @@ func (bm *BackupManager) createRemoteBackup(remoteBackupPath string) error {
 	
 	// Create pg_dump command with custom format and compression
 	// Custom format allows for parallel restore and selective restoration
+	// Quote database name to handle special characters
 	pgDumpCmd := fmt.Sprintf(
-		"%s pg_dump -h %s -p %d -U %s -d %s --verbose --no-password --no-owner --no-privileges --no-tablespaces --no-security-labels --format=custom --compress=%d --file=%s 2>&1",
+		"%s pg_dump -h %s -p %d -U %s -d \"%s\" --verbose --no-password --no-owner --no-privileges --no-tablespaces --no-security-labels --format=custom --compress=%d --file=%s 2>&1",
 		pgPassword,
 		bm.config.Postgres.Host,
 		bm.config.Postgres.Port,

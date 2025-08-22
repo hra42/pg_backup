@@ -51,8 +51,15 @@ backup:
 
 restore:
   enabled: true
+  use_ssh: true                              # Set to false for local restore
+  # Optional: SSH connection for different server (defaults to main SSH if not specified)
+  ssh:
+    host: "staging-server.example.com"
+    port: 22
+    username: "restore-user"
+    key_path: "/home/user/.ssh/id_rsa"
   # Optional: specify different target PostgreSQL server
-  target_host: "staging-server.example.com"  # Defaults to postgres.host
+  target_host: "localhost"                    # PostgreSQL host (from SSH server's perspective)
   target_port: 5432                          # Defaults to postgres.port
   target_database: "restored_db"              # Defaults to postgres.database
   target_username: "restore_user"             # Defaults to postgres.username

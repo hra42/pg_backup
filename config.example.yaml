@@ -44,6 +44,24 @@ timeouts:
 # Restore configuration (optional)
 restore:
   enabled: false             # Enable/disable restore functionality
+  
+  # Optional: Control SSH usage for restore (defaults to true)
+  # use_ssh: false           # Set to false for local restore without SSH
+  
+  # Optional: Auto-install PostgreSQL client tools if missing (local restore only)
+  # auto_install: true       # Automatically install pg_restore if not found
+  
+  # Optional: SSH connection for restore target server (defaults to main SSH settings if not specified)
+  # Uncomment and configure if restoring to a different server than the backup source
+  # Note: Ignored if use_ssh is false
+  # ssh:
+  #   host: "staging-server.example.com"
+  #   port: 22
+  #   username: "restore-user"
+  #   password: "password"           # Use either password or key_path
+  #   key_path: "/home/user/.ssh/id_rsa"
+  #   known_hosts: "/home/user/.ssh/known_hosts"
+  
   # Target PostgreSQL connection (defaults to source postgres settings if not specified)
   target_host: ""           # Target PostgreSQL host (defaults to postgres.host)
   target_port: 0            # Target PostgreSQL port (defaults to postgres.port)

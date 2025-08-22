@@ -58,16 +58,20 @@ type TimeoutConfig struct {
 }
 
 type RestoreConfig struct {
-	Enabled        bool   `yaml:"enabled"`
-	TargetHost     string `yaml:"target_host"`
-	TargetPort     int    `yaml:"target_port"`
-	TargetDatabase string `yaml:"target_database"`
-	TargetUsername string `yaml:"target_username"`
-	TargetPassword string `yaml:"target_password"`
-	DropExisting   bool   `yaml:"drop_existing"`
-	CreateDB       bool   `yaml:"create_db"`
-	Owner          string `yaml:"owner"`
-	Jobs           int    `yaml:"jobs"`
+	Enabled          bool       `yaml:"enabled"`
+	UseSSH           *bool      `yaml:"use_ssh"`        // Optional: explicitly enable/disable SSH (nil = auto, true = use SSH, false = local)
+	AutoInstall      bool       `yaml:"auto_install"`   // Auto-install PostgreSQL client if missing (local restore only)
+	SSH              *SSHConfig `yaml:"ssh"`           // Optional SSH settings for restore target
+	TargetHost       string     `yaml:"target_host"`
+	TargetPort       int        `yaml:"target_port"`
+	TargetDatabase   string     `yaml:"target_database"`
+	TargetUsername   string     `yaml:"target_username"`
+	TargetPassword   string     `yaml:"target_password"`
+	DropExisting     bool       `yaml:"drop_existing"`
+	ForceDisconnect  bool       `yaml:"force_disconnect"` // Force disconnect existing connections when dropping database
+	CreateDB         bool       `yaml:"create_db"`
+	Owner            string     `yaml:"owner"`
+	Jobs             int        `yaml:"jobs"`
 }
 
 type NotificationConfig struct {

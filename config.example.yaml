@@ -69,6 +69,7 @@ restore:
   target_username: ""        # Target PostgreSQL username (defaults to postgres.username)
   target_password: ""        # Target PostgreSQL password (defaults to postgres.password)
   drop_existing: false       # Drop existing database before restore
+  force_disconnect: false    # Force disconnect existing connections when dropping database
   create_db: false          # Create database if it doesn't exist
   owner: ""                 # Database owner (optional, used when create_db is true)
   jobs: 1                   # Number of parallel jobs for restore (1-8)

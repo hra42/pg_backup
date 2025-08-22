@@ -625,17 +625,49 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 			rm.config.Restore.TargetDatabase,
 		)
 		
-		if output, err := rm.sshClient.ExecuteCommand(dropCmd, 30*time.Second); err != nil {
-			return fmt.Errorf("failed to drop existing database: %w (output: %s)", err, output)
+		if output, err := rm.executeCommand(dropCmd, 30*time.Second); err != nil {
+			// Check if error is due to active connections
+			if strings.Contains(output, "being accessed by other users") {
+				// Try a more aggressive approach - force disconnect
+				rm.logger.Warn("Database has active connections, attempting force disconnect")
+				
+				// For PostgreSQL 9.2+, we can use FORCE option (but it's not available in all versions)
+				// Try alternative: revoke connect and terminate
+				revokeCmd := fmt.Sprintf(
+					"%s psql -h %s -p %d -U %s -d postgres -c \"REVOKE CONNECT ON DATABASE \\\"%s\\\" FROM PUBLIC; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s';\"",
+					pgPassword,
+					rm.config.Restore.TargetHost,
+					rm.config.Restore.TargetPort,
+					rm.config.Restore.TargetUsername,
+					rm.config.Restore.TargetDatabase,
+					rm.config.Restore.TargetDatabase,
+				)
+				
+				if _, err := rm.executeCommand(revokeCmd, 10*time.Second); err != nil {
+					rm.logger.Warn("Failed to revoke connections", slog.String("error", err.Error()))
+				}
+				
+				// Wait a bit and try dropping again
+				time.Sleep(2 * time.Second)
+				
+				if output, err := rm.executeCommand(dropCmd, 30*time.Second); err != nil {
+					return fmt.Errorf("failed to drop existing database after terminating connections: %w (output: %s)", err, output)
+				}
+			} else {
+				return fmt.Errorf("failed to drop existing database: %w (output: %s)", err, output)
+			}
 		}
+		
+		rm.logger.Info("Database dropped successfully")
 	}
 
 	// Create database if configured
 	if rm.config.Restore.CreateDB {
 		rm.logger.Info("Creating target database", slog.String("database", rm.config.Restore.TargetDatabase))
 		
+		// Quote database name to handle special characters
 		createCmd := fmt.Sprintf(
-			"%s psql -h %s -p %d -U %s -d postgres -c \"CREATE DATABASE %s",
+			"%s psql -h %s -p %d -U %s -d postgres -c \"CREATE DATABASE \\\"%s\\\"",
 			pgPassword,
 			rm.config.Restore.TargetHost,
 			rm.config.Restore.TargetPort,
@@ -644,11 +676,12 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 		)
 		
 		if rm.config.Restore.Owner != "" {
-			createCmd += fmt.Sprintf(" OWNER %s", rm.config.Restore.Owner)
+			// Also quote owner name in case it has special characters
+			createCmd += fmt.Sprintf(" OWNER \\\"%s\\\"", rm.config.Restore.Owner)
 		}
 		createCmd += ";\""
 		
-		if output, err := rm.sshClient.ExecuteCommand(createCmd, 30*time.Second); err != nil {
+		if output, err := rm.executeCommand(createCmd, 30*time.Second); err != nil {
 			// Check if database already exists
 			if !strings.Contains(err.Error(), "already exists") && !strings.Contains(output, "already exists") {
 				return fmt.Errorf("failed to create database: %w (output: %s)", err, output)
@@ -658,8 +691,9 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 	}
 
 	// Build pg_restore command
+	// Quote database name to handle special characters
 	restoreCmd := fmt.Sprintf(
-		"%s pg_restore -h %s -p %d -U %s -d %s --verbose --no-owner --no-privileges --no-tablespaces",
+		"%s pg_restore -h %s -p %d -U %s -d \"%s\" --verbose --no-owner --no-privileges --no-tablespaces",
 		pgPassword,
 		rm.config.Restore.TargetHost,
 		rm.config.Restore.TargetPort,
@@ -702,7 +736,7 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 		rm.config.Restore.TargetDatabase,
 	)
 
-	tableCount, err := rm.sshClient.ExecuteCommand(verifyCmd, 30*time.Second)
+	tableCount, err := rm.executeCommand(verifyCmd, 30*time.Second)
 	if err != nil {
 		rm.logger.Warn("Failed to verify restore", slog.String("error", err.Error()))
 	} else {

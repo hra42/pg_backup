@@ -176,6 +176,37 @@ func (c *Config) Validate() error {
 
 	// Validate restore config if enabled
 	if c.Restore.Enabled {
+		// Determine SSH usage
+		useSSH := true // Default to using SSH
+		if c.Restore.UseSSH != nil {
+			useSSH = *c.Restore.UseSSH
+		}
+		
+		if useSSH {
+			// If SSH is enabled, validate SSH settings
+			if c.Restore.SSH == nil {
+				// Use backup SSH config as default
+				c.Restore.SSH = &c.SSH
+			} else {
+				// Validate custom restore SSH settings
+				if c.Restore.SSH.Host == "" {
+					return fmt.Errorf("restore SSH host is required")
+				}
+				if c.Restore.SSH.Port == 0 {
+					c.Restore.SSH.Port = 22
+				}
+				if c.Restore.SSH.Username == "" {
+					return fmt.Errorf("restore SSH username is required")
+				}
+				if c.Restore.SSH.Password == "" && c.Restore.SSH.KeyPath == "" {
+					return fmt.Errorf("either restore SSH password or key path is required")
+				}
+			}
+		} else {
+			// Local restore - SSH config should be nil
+			c.Restore.SSH = nil
+		}
+
 		// Default to source database settings if not specified
 		if c.Restore.TargetHost == "" {
 			c.Restore.TargetHost = c.Postgres.Host

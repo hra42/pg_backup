@@ -711,24 +711,157 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 		restoreCmd += " --clean --if-exists"
 	}
 
-	restoreCmd += fmt.Sprintf(" %s 2>&1", remoteBackupPath)
+	restoreCmd += fmt.Sprintf(" %s 2>&1", backupPath)
 
 	// Execute restore (with extended timeout)
 	rm.logger.Info("Executing pg_restore command", slog.Int("jobs", rm.config.Restore.Jobs))
-	output, err = rm.sshClient.ExecuteCommand(restoreCmd, rm.config.Timeouts.BackupOp)
+	output, err = rm.executeCommand(restoreCmd, rm.config.Timeouts.BackupOp)
 	
 	if err != nil {
-		// pg_restore may return warnings as errors, check output
-		if strings.Contains(output, "WARNING") && !strings.Contains(output, "ERROR") {
+		// Check for version mismatch
+		if strings.Contains(output, "unsupported version") {
+			// Extract version info from error
+			versionRegex := regexp.MustCompile(`unsupported version \(([0-9.]+)\)`)
+			matches := versionRegex.FindStringSubmatch(output)
+			backupVersion := "unknown"
+			if len(matches) > 1 {
+				backupVersion = matches[1]
+			}
+			
+			// Check current PostgreSQL version
+			currentVersionCmd := "pg_restore --version 2>&1 | grep -o 'PostgreSQL) [0-9]*' | grep -o '[0-9]*'"
+			currentVersionOutput, _ := rm.executeCommand(currentVersionCmd, 5*time.Second)
+			currentVersion := strings.TrimSpace(currentVersionOutput)
+			
+			rm.logger.Error("PostgreSQL version mismatch",
+				slog.String("backup_version", backupVersion),
+				slog.String("current_version", currentVersion),
+				slog.String("error", "The backup was created with a newer PostgreSQL version"),
+				slog.String("solution", "Please upgrade PostgreSQL client tools to match the backup version"))
+			
+			// Check if backup version is 1.16 (PostgreSQL 16/17) and we have version 16
+			if backupVersion == "1.16" {
+				rm.logger.Info("Backup has dump format version 1.16")
+				rm.logger.Info("This format is used by PostgreSQL 17 or newer development versions")
+				
+				// Check if it's actually a PostgreSQL custom dump
+				magicCmd := fmt.Sprintf("hexdump -C %s | head -n 1", backupPath)
+				magicOutput, _ := rm.executeCommand(magicCmd, 5*time.Second)
+				
+				// PostgreSQL custom format should start with "PGDMP"
+				if !strings.Contains(magicOutput, "50 47 44 4d 50") { // PGDMP in hex
+					rm.logger.Error("File does not appear to be a valid PostgreSQL custom format dump")
+					return fmt.Errorf("invalid backup file format - not a PostgreSQL custom dump")
+				}
+				
+				// Try to install PostgreSQL 17 client tools
+				if rm.sshClient == nil && rm.config.Restore.AutoInstall {
+					rm.logger.Info("Attempting to install PostgreSQL 17 client tools to handle format version 1.16...")
+					
+					// Install PostgreSQL 17
+					installCmd := "apt-get update && apt-get install -y postgresql-client-17"
+					if os.Geteuid() != 0 {
+						if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+							installCmd = "sudo " + installCmd
+						}
+					}
+					
+					if output, err := rm.executeCommand(installCmd, 2*time.Minute); err != nil {
+						rm.logger.Info("Direct installation of PostgreSQL 17 failed, adding PostgreSQL APT repository", slog.String("error", err.Error()))
+						
+						// Add PostgreSQL APT repository for version 17
+						lsbInstallCmd := "apt-get update && apt-get install -y lsb-release"
+						if os.Geteuid() != 0 {
+							if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+								lsbInstallCmd = "sudo " + lsbInstallCmd
+							}
+						}
+						rm.executeCommand(lsbInstallCmd, 1*time.Minute)
+						
+						codenameOutput, _ := rm.executeCommand("lsb_release -cs", 5*time.Second)
+						actualCodename := strings.TrimSpace(codenameOutput)
+						if actualCodename == "" {
+							actualCodename = "bookworm"
+						}
+						
+						repoSetupCmd := fmt.Sprintf(`
+							apt-get install -y wget ca-certificates &&
+							wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - &&
+							echo "deb http://apt.postgresql.org/pub/repos/apt/ %s-pgdg main" > /etc/apt/sources.list.d/pgdg.list &&
+							apt-get update &&
+							apt-get install -y postgresql-client-17
+						`, actualCodename)
+						
+						if os.Geteuid() != 0 {
+							if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+								installCmd = fmt.Sprintf("sudo sh -c '%s'", repoSetupCmd)
+							}
+						} else {
+							installCmd = repoSetupCmd
+						}
+						
+						output, err = rm.executeCommand(installCmd, 5*time.Minute)
+						if err != nil {
+							rm.logger.Error("Failed to install PostgreSQL 17 client tools", 
+								slog.String("error", err.Error()),
+								slog.String("output", output))
+							return fmt.Errorf("restore failed - backup requires PostgreSQL 17 or newer (dump format 1.16): %w", err)
+						}
+					}
+					
+					// Check if pg_restore 17 is now available
+					versionCheck := "pg_restore --version 2>&1 | grep -o 'PostgreSQL) [0-9]*' | grep -o '[0-9]*'"
+					newVersion, _ := rm.executeCommand(versionCheck, 5*time.Second)
+					newVersion = strings.TrimSpace(newVersion)
+					
+					if newVersion == "17" {
+						rm.logger.Info("PostgreSQL 17 client tools installed successfully, retrying restore...")
+						output, err = rm.executeCommand(restoreCmd, rm.config.Timeouts.BackupOp)
+						if err == nil {
+							rm.logger.Info("Restore succeeded with PostgreSQL 17 client")
+							goto restore_success
+						}
+					}
+				}
+				
+				rm.logger.Error("The backup was created with PostgreSQL 17 or newer",
+					slog.String("dump_format", "1.16"),
+					slog.String("solution", "Please install PostgreSQL 17 client tools or enable auto_install in config"))
+				
+				return fmt.Errorf("restore failed - backup requires PostgreSQL 17 or newer (dump format 1.16): %w (output: %s)", err, output)
+			}
+			
+			// Try to suggest installation of newer version
+			if rm.sshClient == nil && rm.config.Restore.AutoInstall {
+				rm.logger.Info("Attempting to install newer PostgreSQL client tools...")
+				if err := rm.tryInstallSpecificPostgreSQLVersion(backupVersion); err != nil {
+					rm.logger.Error("Failed to auto-install newer PostgreSQL version",
+						slog.String("error", err.Error()))
+				} else {
+					// Retry the restore with new version
+					rm.logger.Info("Retrying restore with updated PostgreSQL client...")
+					output, err = rm.executeCommand(restoreCmd, rm.config.Timeouts.BackupOp)
+					if err == nil {
+						rm.logger.Info("Restore succeeded with updated PostgreSQL client")
+						goto restore_success
+					}
+				}
+			}
+			
+			return fmt.Errorf("restore failed due to PostgreSQL version mismatch - backup requires PostgreSQL %s or newer: %w (output: %s)", backupVersion, err, output)
+		} else if strings.Contains(output, "WARNING") && !strings.Contains(output, "ERROR") {
 			rm.logger.Warn("Restore completed with warnings", slog.String("output", output))
 		} else {
 			return fmt.Errorf("restore failed: %w (output: %s)", err, output)
 		}
 	}
+	
+restore_success:
 
 	// Verify restore by checking table count
+	// Quote database name to handle special characters
 	verifyCmd := fmt.Sprintf(
-		"%s psql -h %s -p %d -U %s -d %s -t -c \"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';\"",
+		"%s psql -h %s -p %d -U %s -d \"%s\" -t -c \"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';\"",
 		pgPassword,
 		rm.config.Restore.TargetHost,
 		rm.config.Restore.TargetPort,

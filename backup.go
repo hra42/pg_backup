@@ -187,7 +187,7 @@ func (bm *BackupManager) createRemoteBackup(remoteBackupPath string) error {
 		if output != "" {
 			errMsg = fmt.Sprintf("%s\nCommand output: %s", errMsg, output)
 		}
-		return fmt.Errorf(errMsg)
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	statOutput, err := bm.sshClient.ExecuteCommand(fmt.Sprintf("stat -c %%s %s 2>/dev/null || stat -f %%z %s 2>/dev/null", remoteBackupPath, remoteBackupPath), 10*time.Second)

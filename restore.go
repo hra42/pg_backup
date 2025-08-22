@@ -247,15 +247,340 @@ func (rm *RestoreManager) transferToRemote(localPath, remotePath string) error {
 	return nil
 }
 
-func (rm *RestoreManager) performRestore(remoteBackupPath string) error {
-	rm.logger.Info("Performing database restore",
-		slog.String("backup_file", remoteBackupPath),
-		slog.String("target_database", rm.config.Restore.TargetDatabase))
+func (rm *RestoreManager) executeCommand(command string, timeout time.Duration) (string, error) {
+	if rm.sshClient != nil {
+		// Execute via SSH
+		return rm.sshClient.ExecuteCommand(command, timeout)
+	}
+	
+	// Execute locally
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	
+	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	output, err := cmd.CombinedOutput()
+	return string(output), err
+}
 
+func (rm *RestoreManager) tryInstallPostgreSQLClient() error {
+	rm.logger.Info("Attempting to auto-install PostgreSQL client tools...")
+	
+	// Detect the package manager and OS
+	detectCmd := `
+if command -v apt-get >/dev/null 2>&1; then
+    echo "apt"
+elif command -v yum >/dev/null 2>&1; then
+    echo "yum"
+elif command -v dnf >/dev/null 2>&1; then
+    echo "dnf"
+elif command -v apk >/dev/null 2>&1; then
+    echo "apk"
+elif command -v brew >/dev/null 2>&1; then
+    echo "brew"
+else
+    echo "unknown"
+fi`
+	
+	output, err := rm.executeCommand(detectCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to detect package manager: %w", err)
+	}
+	
+	packageManager := strings.TrimSpace(output)
+	rm.logger.Info("Detected package manager", slog.String("type", packageManager))
+	
+	var installCmd string
+	switch packageManager {
+	case "apt":
+		// Check if running as root or with sudo
+		installCmd = "apt-get update && apt-get install -y postgresql-client"
+		if os.Geteuid() != 0 {
+			// Not root, try with sudo
+			if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+				installCmd = "sudo " + installCmd
+			} else {
+				return fmt.Errorf("not running as root and sudo not available")
+			}
+		}
+	case "yum":
+		installCmd = "yum install -y postgresql"
+		if os.Geteuid() != 0 {
+			if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+				installCmd = "sudo " + installCmd
+			} else {
+				return fmt.Errorf("not running as root and sudo not available")
+			}
+		}
+	case "dnf":
+		installCmd = "dnf install -y postgresql"
+		if os.Geteuid() != 0 {
+			if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+				installCmd = "sudo " + installCmd
+			} else {
+				return fmt.Errorf("not running as root and sudo not available")
+			}
+		}
+	case "apk":
+		installCmd = "apk add --no-cache postgresql-client"
+		if os.Geteuid() != 0 {
+			if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+				installCmd = "sudo " + installCmd
+			} else {
+				return fmt.Errorf("not running as root and sudo not available")
+			}
+		}
+	case "brew":
+		installCmd = "brew install postgresql"
+	default:
+		return fmt.Errorf("unsupported package manager or OS")
+	}
+	
+	rm.logger.Info("Installing PostgreSQL client tools...", slog.String("command", installCmd))
+	
+	// Execute installation with extended timeout
+	output, err = rm.executeCommand(installCmd, 5*time.Minute)
+	if err != nil {
+		return fmt.Errorf("installation failed: %w (output: %s)", err, output)
+	}
+	
+	rm.logger.Info("PostgreSQL client tools installation completed")
+	return nil
+}
+
+func (rm *RestoreManager) tryInstallSpecificPostgreSQLVersion(version string) error {
+	rm.logger.Info("Attempting to install specific PostgreSQL version", slog.String("version", version))
+	
+	// Map version numbers to major versions (1.16 = PostgreSQL 16, 1.15 = PostgreSQL 15, etc.)
+	majorVersion := ""
+	switch version {
+	case "1.16":
+		majorVersion = "16"
+	case "1.15":
+		majorVersion = "15"
+	case "1.14":
+		majorVersion = "14"
+	case "1.13":
+		majorVersion = "13"
+	default:
+		// Try to extract major version from the format
+		if strings.HasPrefix(version, "1.") {
+			majorVersion = strings.TrimPrefix(version, "1.")
+		}
+	}
+	
+	if majorVersion == "" {
+		return fmt.Errorf("unable to determine PostgreSQL major version from backup version %s", version)
+	}
+	
+	rm.logger.Info("Detected PostgreSQL major version", slog.String("major_version", majorVersion))
+	
+	// Detect package manager
+	detectCmd := `command -v apt-get || command -v yum || command -v dnf || command -v apk || echo "unknown"`
+	output, err := rm.executeCommand(detectCmd, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("failed to detect package manager: %w", err)
+	}
+	
+	packageManager := filepath.Base(strings.TrimSpace(output))
+	rm.logger.Info("Using package manager", slog.String("type", packageManager))
+	
+	var installCmd string
+	switch packageManager {
+	case "apt-get":
+		// For Debian/Ubuntu
+		// Try to detect the codename, with multiple fallbacks
+		codename := "bookworm" // Default to Debian 12
+		
+		// Try method 1: /etc/os-release
+		if output, err := rm.executeCommand("grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2", 5*time.Second); err == nil && output != "" {
+			codename = strings.TrimSpace(strings.Trim(output, "\""))
+		} else if output, err := rm.executeCommand("grep UBUNTU_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2", 5*time.Second); err == nil && output != "" {
+			codename = strings.TrimSpace(strings.Trim(output, "\""))
+		} else if output, err := rm.executeCommand("head -1 /etc/debian_version 2>/dev/null", 5*time.Second); err == nil && output != "" {
+			// Map Debian version numbers to codenames
+			version := strings.TrimSpace(output)
+			if strings.HasPrefix(version, "12") {
+				codename = "bookworm"
+			} else if strings.HasPrefix(version, "11") {
+				codename = "bullseye"
+			} else if strings.HasPrefix(version, "10") {
+				codename = "buster"
+			}
+		}
+		
+		rm.logger.Info("Detected distribution codename", slog.String("codename", codename))
+		
+		// Simpler approach: try to install from official repos first, then add PostgreSQL repo if needed
+		installCmd = fmt.Sprintf("apt-get update && apt-get install -y postgresql-client-%s", majorVersion)
+		
+		// Execute with elevated privileges if needed
+		if os.Geteuid() != 0 {
+			if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+				installCmd = "sudo " + installCmd
+			} else {
+				return fmt.Errorf("not running as root and sudo not available")
+			}
+		}
+		
+		// Try simple installation first
+		rm.logger.Info("Attempting direct installation from system repositories")
+		if output, err := rm.executeCommand(installCmd, 2*time.Minute); err != nil {
+			rm.logger.Info("Direct installation failed, adding PostgreSQL APT repository", slog.String("error", err.Error()))
+			
+			// If that fails, add the PostgreSQL APT repository
+			// First ensure lsb-release is installed and get the codename
+			lsbInstallCmd := "apt-get update && apt-get install -y lsb-release"
+			if os.Geteuid() != 0 {
+				if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+					lsbInstallCmd = "sudo " + lsbInstallCmd
+				}
+			}
+			rm.executeCommand(lsbInstallCmd, 1*time.Minute)
+			
+			// Get the actual codename
+			codenameOutput, _ := rm.executeCommand("lsb_release -cs", 5*time.Second)
+			actualCodename := strings.TrimSpace(codenameOutput)
+			if actualCodename == "" {
+				actualCodename = codename // fallback to detected codename
+			}
+			
+			rm.logger.Info("Using distribution codename for PostgreSQL repo", slog.String("codename", actualCodename))
+			
+			repoSetupCmd := fmt.Sprintf(`
+				apt-get install -y wget ca-certificates &&
+				wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - &&
+				echo "deb http://apt.postgresql.org/pub/repos/apt/ %s-pgdg main" > /etc/apt/sources.list.d/pgdg.list &&
+				apt-get update &&
+				apt-get install -y postgresql-client-%s
+			`, actualCodename, majorVersion)
+			
+			if os.Geteuid() != 0 {
+				if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+					installCmd = fmt.Sprintf("sudo sh -c '%s'", repoSetupCmd)
+				} else {
+					return fmt.Errorf("not running as root and sudo not available for repository setup")
+				}
+			} else {
+				installCmd = repoSetupCmd
+			}
+			
+			output, err = rm.executeCommand(installCmd, 5*time.Minute)
+			if err != nil {
+				return fmt.Errorf("failed to install PostgreSQL %s client: %w (output: %s)", majorVersion, err, output)
+			}
+		}
+	case "yum", "dnf":
+		// For RHEL/CentOS/Fedora
+		installCmd = fmt.Sprintf("%s install -y postgresql%s", packageManager, majorVersion)
+		if os.Geteuid() != 0 {
+			if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+				installCmd = "sudo " + installCmd
+			} else {
+				return fmt.Errorf("not running as root and sudo not available")
+			}
+		}
+	case "apk":
+		// For Alpine Linux
+		installCmd = fmt.Sprintf("apk add --no-cache postgresql%s-client", majorVersion)
+		if os.Geteuid() != 0 {
+			if _, err := rm.executeCommand("command -v sudo", 5*time.Second); err == nil {
+				installCmd = "sudo " + installCmd
+			} else {
+				return fmt.Errorf("not running as root and sudo not available")
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported package manager for automatic PostgreSQL %s installation", majorVersion)
+	}
+	
+	rm.logger.Info("Installing PostgreSQL client version", 
+		slog.String("version", majorVersion),
+		slog.String("command", installCmd))
+	
+	output, err = rm.executeCommand(installCmd, 5*time.Minute)
+	if err != nil {
+		return fmt.Errorf("failed to install PostgreSQL %s client: %w (output: %s)", majorVersion, err, output)
+	}
+	
+	// Verify installation
+	versionCheck := fmt.Sprintf("pg_restore --version | grep -q 'pg_restore (PostgreSQL) %s'", majorVersion)
+	if _, err := rm.executeCommand(versionCheck, 10*time.Second); err == nil {
+		rm.logger.Info("Successfully installed PostgreSQL client", slog.String("version", majorVersion))
+	}
+	
+	return nil
+}
+
+func (rm *RestoreManager) performRestore(backupPath string) error {
+	rm.logger.Info("Performing database restore",
+		slog.String("backup_file", backupPath),
+		slog.String("target_database", rm.config.Restore.TargetDatabase),
+		slog.Bool("local", rm.sshClient == nil))
+
+	// Check PostgreSQL version first
+	pgVersionCmd := "pg_restore --version 2>&1 | grep -o 'PostgreSQL) [0-9]*' | grep -o '[0-9]*'"
+	versionOutput, err := rm.executeCommand(pgVersionCmd, 10*time.Second)
+	if err == nil && versionOutput != "" {
+		currentVersion := strings.TrimSpace(versionOutput)
+		rm.logger.Info("PostgreSQL client version detected", slog.String("version", currentVersion))
+	}
+	
 	// Check if pg_restore exists
-	output, err := rm.sshClient.ExecuteCommand("which pg_restore", 10*time.Second)
+	output, err := rm.executeCommand("which pg_restore || command -v pg_restore || type pg_restore 2>/dev/null", 10*time.Second)
 	if err != nil || strings.TrimSpace(output) == "" {
-		return fmt.Errorf("pg_restore not found on remote server")
+		// Try common PostgreSQL installation paths
+		commonPaths := []string{
+			"/usr/bin/pg_restore",
+			"/usr/local/bin/pg_restore",
+			"/opt/homebrew/bin/pg_restore",
+			"/usr/pgsql-*/bin/pg_restore",
+			"/usr/lib/postgresql/*/bin/pg_restore",
+		}
+		
+		found := false
+		for _, path := range commonPaths {
+			checkCmd := fmt.Sprintf("test -x %s && echo %s", path, path)
+			if output, err := rm.executeCommand(checkCmd, 5*time.Second); err == nil && strings.TrimSpace(output) != "" {
+				found = true
+				rm.logger.Info("Found pg_restore at", slog.String("path", strings.TrimSpace(output)))
+				break
+			}
+		}
+		
+		if !found {
+			location := "remote server"
+			if rm.sshClient == nil {
+				location = "local system"
+				rm.logger.Warn("pg_restore not found on local system")
+				
+				// Try to auto-install PostgreSQL client tools if enabled
+				if rm.config.Restore.AutoInstall {
+					if err := rm.tryInstallPostgreSQLClient(); err != nil {
+						rm.logger.Error("Failed to auto-install PostgreSQL client tools",
+							slog.String("error", err.Error()),
+							slog.String("hint", "Please install manually with: apt-get install postgresql-client or yum install postgresql"))
+						return fmt.Errorf("pg_restore not found on %s and auto-install failed: %w", location, err)
+					}
+					
+					// Check again after installation
+					output, err = rm.executeCommand("which pg_restore", 10*time.Second)
+					if err != nil || strings.TrimSpace(output) == "" {
+						return fmt.Errorf("pg_restore still not found after installation attempt")
+					}
+					rm.logger.Info("PostgreSQL client tools installed successfully", 
+						slog.String("pg_restore", strings.TrimSpace(output)))
+				} else {
+					rm.logger.Error("pg_restore not found. Please install PostgreSQL client tools.",
+						slog.String("hint", "Install with: apt-get install postgresql-client or yum install postgresql"),
+						slog.String("note", "Or enable auto_install in restore config"))
+					return fmt.Errorf("pg_restore not found on %s (auto-install disabled)", location)
+				}
+			} else {
+				return fmt.Errorf("pg_restore not found on %s", location)
+			}
+		}
+	} else {
+		rm.logger.Info("Found pg_restore", slog.String("path", strings.TrimSpace(output)))
 	}
 
 	pgPassword := fmt.Sprintf("PGPASSWORD='%s'", rm.config.Restore.TargetPassword)
@@ -264,8 +589,35 @@ func (rm *RestoreManager) performRestore(remoteBackupPath string) error {
 	if rm.config.Restore.DropExisting {
 		rm.logger.Info("Dropping existing database", slog.String("database", rm.config.Restore.TargetDatabase))
 		
+		// Terminate existing connections if force_disconnect is enabled
+		if rm.config.Restore.ForceDisconnect {
+			rm.logger.Info("Force disconnect enabled - terminating existing connections to database")
+			terminateCmd := fmt.Sprintf(
+				"%s psql -h %s -p %d -U %s -d postgres -c \"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s' AND pid <> pg_backend_pid();\"",
+				pgPassword,
+				rm.config.Restore.TargetHost,
+				rm.config.Restore.TargetPort,
+				rm.config.Restore.TargetUsername,
+				rm.config.Restore.TargetDatabase,
+			)
+			
+			if output, err := rm.executeCommand(terminateCmd, 10*time.Second); err != nil {
+				// Log but don't fail if we can't terminate connections (might not have permissions)
+				rm.logger.Warn("Failed to terminate existing connections", 
+					slog.String("error", err.Error()),
+					slog.String("output", output))
+			} else {
+				rm.logger.Info("Terminated existing connections", slog.String("output", strings.TrimSpace(output)))
+			}
+			
+			// Small delay to ensure connections are closed
+			time.Sleep(1 * time.Second)
+		}
+		
+		// Now drop the database
+		// Quote database name to handle special characters
 		dropCmd := fmt.Sprintf(
-			"%s psql -h %s -p %d -U %s -d postgres -c \"DROP DATABASE IF EXISTS %s;\"",
+			"%s psql -h %s -p %d -U %s -d postgres -c \"DROP DATABASE IF EXISTS \\\"%s\\\";\"",
 			pgPassword,
 			rm.config.Restore.TargetHost,
 			rm.config.Restore.TargetPort,

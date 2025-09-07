@@ -4,12 +4,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
+
+	"github.com/DeRuina/timberjack"
 )
 
 var (
@@ -39,13 +43,13 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger := setupLogger(*logLevel, *jsonLogs)
-
 	config, err := LoadConfig(*configPath)
 	if err != nil {
-		logger.Error("Failed to load configuration", slog.String("error", err.Error()))
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
 		os.Exit(1)
 	}
+
+	logger := setupLogger(*logLevel, *jsonLogs, config)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -154,7 +158,7 @@ func main() {
 	os.Exit(0)
 }
 
-func setupLogger(level string, jsonFormat bool) *slog.Logger {
+func setupLogger(level string, jsonFormat bool, config *Config) *slog.Logger {
 	var logLevel slog.Level
 	switch level {
 	case "debug":
@@ -174,11 +178,61 @@ func setupLogger(level string, jsonFormat bool) *slog.Logger {
 		AddSource: false,
 	}
 
+	var writer io.Writer = os.Stdout
+	
+	// If log file path is configured, set up file logging with rotation
+	if config.Log.FilePath != "" {
+		// Ensure log directory exists
+		logDir := filepath.Dir(config.Log.FilePath)
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create log directory %s: %v\n", logDir, err)
+			os.Exit(1)
+		}
+		
+		// Configure timberjack for log rotation
+		tj := &timberjack.Logger{
+			Filename:   config.Log.FilePath,
+			MaxSize:    config.Log.MaxSize,    // megabytes
+			MaxBackups: config.Log.MaxBackups, // number of backups
+			MaxAge:     config.Log.MaxAge,     // days
+			Compress:   config.Log.Compress,   // compress rotated files
+			LocalTime:  true,                  // use local time for rotation
+		}
+		
+		// Configure time-based rotation if specified
+		if config.Log.RotationTime != "" {
+			switch config.Log.RotationTime {
+			case "hourly":
+				tj.RotationInterval = time.Hour
+				// Rotate at specific minute of each hour
+				if config.Log.RotationMinute >= 0 && config.Log.RotationMinute <= 59 {
+					tj.RotateAtMinutes = []int{config.Log.RotationMinute}
+				}
+			case "daily":
+				// Rotate at specific time each day (00:00 by default)
+				rotateTime := fmt.Sprintf("%02d:%02d", 0, config.Log.RotationMinute)
+				tj.RotateAt = []string{rotateTime}
+			case "weekly":
+				tj.RotationInterval = 7 * 24 * time.Hour
+			default:
+				// Try to parse as duration
+				if d, err := time.ParseDuration(config.Log.RotationTime); err == nil {
+					tj.RotationInterval = d
+				} else {
+					// Default to daily if invalid
+					tj.RotationInterval = 24 * time.Hour
+				}
+			}
+		}
+		
+		writer = tj
+	}
+
 	var handler slog.Handler
 	if jsonFormat {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
+		handler = slog.NewJSONHandler(writer, opts)
 	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		handler = slog.NewTextHandler(writer, opts)
 	}
 
 	return slog.New(handler)

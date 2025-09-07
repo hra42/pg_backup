@@ -16,6 +16,7 @@ type Config struct {
 	Restore      RestoreConfig      `yaml:"restore"`
 	Timeouts     TimeoutConfig      `yaml:"timeouts"`
 	Notification NotificationConfig `yaml:"notification"`
+	Log          LogConfig          `yaml:"log"`
 }
 
 type SSHConfig struct {
@@ -83,6 +84,16 @@ type NotificationConfig struct {
 	ReplyTo     string `yaml:"reply_to"`
 }
 
+type LogConfig struct {
+	FilePath       string `yaml:"file_path"`        // Path to log file (empty = stdout)
+	MaxSize        int    `yaml:"max_size"`         // Max size in MB before rotation
+	MaxBackups     int    `yaml:"max_backups"`      // Max number of old log files to keep
+	MaxAge         int    `yaml:"max_age"`          // Max days to retain old log files
+	Compress       bool   `yaml:"compress"`         // Whether to compress rotated files
+	RotationTime   string `yaml:"rotation_time"`    // Time-based rotation: "hourly", "daily", "weekly", or duration like "24h"
+	RotationMinute int    `yaml:"rotation_minute"`  // Minute to rotate (0-59, for hourly/daily/weekly rotation)
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -110,6 +121,15 @@ func LoadConfig(path string) (*Config, error) {
 		Notification: NotificationConfig{
 			Enabled:    false,
 			BinaryPath: "/usr/local/bin/go-notification",
+		},
+		Log: LogConfig{
+			FilePath:       "", // Empty means stdout
+			MaxSize:        100, // 100 MB
+			MaxBackups:     3,
+			MaxAge:         30, // 30 days
+			Compress:       true,
+			RotationTime:   "daily", // Default to daily rotation
+			RotationMinute: 0, // Rotate at midnight by default
 		},
 	}
 

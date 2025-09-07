@@ -32,6 +32,7 @@ func main() {
 		restoreMode   = flag.Bool("restore", false, "Run in restore mode")
 		listBackups   = flag.Bool("list-backups", false, "List available backups")
 		backupKey     = flag.String("backup-key", "", "Specific backup key to restore (optional, uses latest if not specified)")
+		cleanupOnly   = flag.Bool("cleanup", false, "Run cleanup only (remove old backups based on retention policy)")
 	)
 	flag.Parse()
 
@@ -66,6 +67,26 @@ func main() {
 		logger.Error("Forced shutdown after timeout")
 		os.Exit(130)
 	}()
+
+	// Handle cleanup-only mode
+	if *cleanupOnly {
+		logger.Info("Running cleanup only mode")
+		
+		s3Client, err := NewS3Client(&config.S3, logger)
+		if err != nil {
+			logger.Error("Failed to initialize S3 client", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		
+		logger.Info("Starting backup cleanup", slog.Int("retention_count", config.Backup.RetentionCount))
+		if err := s3Client.CleanupOldBackups(ctx, config.Backup.RetentionCount); err != nil {
+			logger.Error("Cleanup failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		
+		logger.Info("Cleanup completed successfully")
+		os.Exit(0)
+	}
 
 	// Handle restore mode
 	if *restoreMode || *listBackups {

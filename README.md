@@ -102,6 +102,13 @@ notification:
 ./pg_backup -config config.yaml -list-backups
 ```
 
+### Run cleanup only
+```bash
+./pg_backup -config config.yaml -cleanup
+```
+
+This will remove old backups from S3 based on your retention policy without performing a new backup.
+
 ### Restore latest backup
 ```bash
 ./pg_backup -config config.yaml -restore

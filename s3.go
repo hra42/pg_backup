@@ -165,7 +165,7 @@ func (s *S3Client) CleanupOldBackups(ctx context.Context, retentionCount int) er
 
 		for _, obj := range page.Contents {
 			// Only include files that match our backup pattern
-			if obj.Key != nil && strings.Contains(*obj.Key, "pg_backup_") {
+			if obj.Key != nil && strings.HasPrefix(filepath.Base(*obj.Key), "backup-") && strings.HasSuffix(*obj.Key, ".dump") {
 				allBackups = append(allBackups, backupInfo{
 					Key:          obj.Key,
 					LastModified: obj.LastModified,

@@ -4,12 +4,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
+
+	"github.com/DeRuina/timberjack"
 )
 
 var (
@@ -20,11 +24,15 @@ var (
 
 func main() {
 	var (
-		configPath  = flag.String("config", "config.yaml", "Path to configuration file")
-		dryRun      = flag.Bool("dry-run", false, "Test configuration without performing backup")
-		showVersion = flag.Bool("version", false, "Show version information")
-		logLevel    = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-		jsonLogs    = flag.Bool("json-logs", false, "Output logs in JSON format")
+		configPath    = flag.String("config", "config.yaml", "Path to configuration file")
+		dryRun        = flag.Bool("dry-run", false, "Test configuration without performing backup")
+		showVersion   = flag.Bool("version", false, "Show version information")
+		logLevel      = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+		jsonLogs      = flag.Bool("json-logs", false, "Output logs in JSON format")
+		restoreMode   = flag.Bool("restore", false, "Run in restore mode")
+		listBackups   = flag.Bool("list-backups", false, "List available backups")
+		backupKey     = flag.String("backup-key", "", "Specific backup key to restore (optional, uses latest if not specified)")
+		cleanupOnly   = flag.Bool("cleanup", false, "Run cleanup only (remove old backups based on retention policy)")
 	)
 	flag.Parse()
 
@@ -36,18 +44,13 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger := setupLogger(*logLevel, *jsonLogs)
-
-	logger.Info("Starting pg_backup",
-		slog.String("version", version),
-		slog.String("config", *configPath),
-		slog.Bool("dry_run", *dryRun))
-
 	config, err := LoadConfig(*configPath)
 	if err != nil {
-		logger.Error("Failed to load configuration", slog.String("error", err.Error()))
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
 		os.Exit(1)
 	}
+
+	logger := setupLogger(*logLevel, *jsonLogs, config)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -64,6 +67,82 @@ func main() {
 		logger.Error("Forced shutdown after timeout")
 		os.Exit(130)
 	}()
+
+	// Handle cleanup-only mode
+	if *cleanupOnly {
+		logger.Info("Running cleanup only mode")
+		
+		s3Client, err := NewS3Client(&config.S3, logger)
+		if err != nil {
+			logger.Error("Failed to initialize S3 client", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		
+		logger.Info("Starting backup cleanup", slog.Int("retention_count", config.Backup.RetentionCount))
+		if err := s3Client.CleanupOldBackups(ctx, config.Backup.RetentionCount); err != nil {
+			logger.Error("Cleanup failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		
+		logger.Info("Cleanup completed successfully")
+		os.Exit(0)
+	}
+
+	// Handle restore mode
+	if *restoreMode || *listBackups {
+		if !config.Restore.Enabled && !*listBackups {
+			logger.Error("Restore feature is not enabled in configuration")
+			os.Exit(1)
+		}
+
+		restoreManager, err := NewRestoreManager(config, logger)
+		if err != nil {
+			logger.Error("Failed to initialize restore manager", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+
+		if *listBackups {
+			logger.Info("Listing available backups")
+			backups, err := restoreManager.ListAvailableBackups(ctx)
+			if err != nil {
+				logger.Error("Failed to list backups", slog.String("error", err.Error()))
+				os.Exit(1)
+			}
+
+			if len(backups) == 0 {
+				logger.Info("No backups found")
+			} else {
+				logger.Info("Available backups:")
+				for i, backup := range backups {
+					fmt.Printf("%d. %s\n", i+1, backup)
+				}
+			}
+			os.Exit(0)
+		}
+
+		logger.Info("Starting restore",
+			slog.String("version", version),
+			slog.String("config", *configPath),
+			slog.String("backup_key", *backupKey))
+
+		startTime := time.Now()
+		if err := restoreManager.Run(ctx, *backupKey); err != nil {
+			logger.Error("Restore failed",
+				slog.String("error", err.Error()),
+				slog.Duration("duration", time.Since(startTime)))
+			os.Exit(1)
+		}
+
+		logger.Info("Restore completed successfully",
+			slog.Duration("duration", time.Since(startTime)))
+		os.Exit(0)
+	}
+
+	// Normal backup mode
+	logger.Info("Starting pg_backup",
+		slog.String("version", version),
+		slog.String("config", *configPath),
+		slog.Bool("dry_run", *dryRun))
 
 	backupManager, err := NewBackupManager(config, logger)
 	if err != nil {
@@ -100,7 +179,7 @@ func main() {
 	os.Exit(0)
 }
 
-func setupLogger(level string, jsonFormat bool) *slog.Logger {
+func setupLogger(level string, jsonFormat bool, config *Config) *slog.Logger {
 	var logLevel slog.Level
 	switch level {
 	case "debug":
@@ -120,11 +199,61 @@ func setupLogger(level string, jsonFormat bool) *slog.Logger {
 		AddSource: false,
 	}
 
+	var writer io.Writer = os.Stdout
+	
+	// If log file path is configured, set up file logging with rotation
+	if config.Log.FilePath != "" {
+		// Ensure log directory exists
+		logDir := filepath.Dir(config.Log.FilePath)
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create log directory %s: %v\n", logDir, err)
+			os.Exit(1)
+		}
+		
+		// Configure timberjack for log rotation
+		tj := &timberjack.Logger{
+			Filename:   config.Log.FilePath,
+			MaxSize:    config.Log.MaxSize,    // megabytes
+			MaxBackups: config.Log.MaxBackups, // number of backups
+			MaxAge:     config.Log.MaxAge,     // days
+			Compress:   config.Log.Compress,   // compress rotated files
+			LocalTime:  true,                  // use local time for rotation
+		}
+		
+		// Configure time-based rotation if specified
+		if config.Log.RotationTime != "" {
+			switch config.Log.RotationTime {
+			case "hourly":
+				tj.RotationInterval = time.Hour
+				// Rotate at specific minute of each hour
+				if config.Log.RotationMinute >= 0 && config.Log.RotationMinute <= 59 {
+					tj.RotateAtMinutes = []int{config.Log.RotationMinute}
+				}
+			case "daily":
+				// Rotate at specific time each day (00:00 by default)
+				rotateTime := fmt.Sprintf("%02d:%02d", 0, config.Log.RotationMinute)
+				tj.RotateAt = []string{rotateTime}
+			case "weekly":
+				tj.RotationInterval = 7 * 24 * time.Hour
+			default:
+				// Try to parse as duration
+				if d, err := time.ParseDuration(config.Log.RotationTime); err == nil {
+					tj.RotationInterval = d
+				} else {
+					// Default to daily if invalid
+					tj.RotationInterval = 24 * time.Hour
+				}
+			}
+		}
+		
+		writer = tj
+	}
+
 	var handler slog.Handler
 	if jsonFormat {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
+		handler = slog.NewJSONHandler(writer, opts)
 	} else {
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		handler = slog.NewTextHandler(writer, opts)
 	}
 
 	return slog.New(handler)

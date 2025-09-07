@@ -1,14 +1,15 @@
-# PostgreSQL Backup Tool
+# PostgreSQL Backup & Restore Tool
 
-A robust Go application for PostgreSQL backups with strict error handling. Any failure immediately terminates the process with appropriate error reporting.
+A robust Go application for PostgreSQL backups and restores with strict error handling. Any failure immediately terminates the process with appropriate error reporting.
 
 ## Features
 
 - **SSH-based remote backup execution** - Connects to production server and runs pg_dump
+- **Database restore capability** - Restore backups from S3 to any PostgreSQL instance
 - **Rsync file transfer** - Fast, efficient transfer with resume capability
-- **S3-compatible storage** - Upload backups to Garage or any S3-compatible storage
+- **S3-compatible storage** - Upload/download backups to/from Garage or any S3-compatible storage
 - **Automatic retention management** - Keep only the N most recent backups
-- **Email notifications** - Success/failure notifications via go-notification
+- **Email notifications** - Success/failure notifications via go-notification for both backup and restore
 - **Progress tracking** - Real-time progress for all long-running operations
 - **Structured logging** - Clear, parseable logs with context
 - **Graceful shutdown** - Handles SIGINT/SIGTERM with cleanup
@@ -48,6 +49,25 @@ s3:
 backup:
   retention_count: 7  # Keep 7 most recent backups
 
+restore:
+  enabled: true
+  use_ssh: true                              # Set to false for local restore
+  # Optional: SSH connection for different server (defaults to main SSH if not specified)
+  ssh:
+    host: "staging-server.example.com"
+    port: 22
+    username: "restore-user"
+    key_path: "/home/user/.ssh/id_rsa"
+  # Optional: specify different target PostgreSQL server
+  target_host: "localhost"                    # PostgreSQL host (from SSH server's perspective)
+  target_port: 5432                          # Defaults to postgres.port
+  target_database: "restored_db"              # Defaults to postgres.database
+  target_username: "restore_user"             # Defaults to postgres.username
+  target_password: "restore_password"         # Defaults to postgres.password
+  drop_existing: true
+  create_db: true
+  jobs: 4  # Parallel restore jobs
+
 notification:
   enabled: true
   api_key: "your-api-key"
@@ -77,6 +97,86 @@ notification:
 ./pg_backup -config config.yaml -json-logs
 ```
 
+### List available backups
+```bash
+./pg_backup -config config.yaml -list-backups
+```
+
+### Run cleanup only
+```bash
+./pg_backup -config config.yaml -cleanup
+```
+
+This will remove old backups from S3 based on your retention policy without performing a new backup.
+
+### Restore latest backup
+```bash
+./pg_backup -config config.yaml -restore
+```
+
+### Restore specific backup
+```bash
+./pg_backup -config config.yaml -restore -backup-key "backup-20240101-120000-backup_20240101_120000.dump"
+```
+
+### Local Restore (Without SSH)
+
+For restoring to a PostgreSQL instance on the same machine where pg_backup runs, you can disable SSH:
+
+```yaml
+restore:
+  enabled: true
+  use_ssh: false                        # Disable SSH for local restore
+  auto_install: true                    # Auto-install pg_restore if missing
+  target_host: "localhost"               # Local PostgreSQL instance
+  target_port: 5432
+  target_database: "restored_db"
+  target_username: "postgres"
+  target_password: "password"
+  force_disconnect: true                # Terminate active connections before dropping
+```
+
+This executes pg_restore directly on the local machine without any SSH connection. If `auto_install` is enabled and pg_restore is not found, the tool will attempt to install PostgreSQL client tools automatically using the system's package manager (apt, yum, dnf, apk, or brew).
+
+### Restore to Different PostgreSQL Server
+
+You can restore backups to a completely different server by specifying both SSH and PostgreSQL connection settings:
+
+```yaml
+restore:
+  enabled: true
+  # SSH connection to the restore target server
+  ssh:
+    host: "staging.example.com"          # Different SSH server
+    port: 22
+    username: "staging-user"
+    key_path: "/home/user/.ssh/staging_key"
+  
+  # PostgreSQL connection on the target server
+  target_host: "localhost"               # PostgreSQL host from target server's perspective
+  target_port: 5432
+  target_database: "staging_db"          # Different database name
+  target_username: "staging_user"
+  target_password: "staging_password"
+```
+
+**Important Notes:**
+- If `ssh` is not specified in restore config, it defaults to the main SSH settings (same server as backup source)
+- The `target_host` is the PostgreSQL host as seen from the restore SSH server (often "localhost")
+- This setup allows complete separation between backup source and restore target
+
+**Restore Modes:**
+1. **Local restore** (`use_ssh: false`) - Restore to local PostgreSQL without SSH
+2. **Same server restore** (omit `ssh` config) - Use backup server's SSH settings
+3. **Different server restore** (provide `ssh` config) - Connect to a different server
+
+This is useful for:
+- Local development and testing environments
+- Restoring production backups to staging/development environments on different servers
+- Cross-server database migrations
+- Creating test databases from production backups on isolated servers
+- Disaster recovery to standby servers in different data centers
+
 ## Exit Codes
 
 - `0` - Success
@@ -87,13 +187,22 @@ notification:
 - `5` - S3 upload failed
 - `6` - Cleanup failed (critical cleanup only)
 
-## Workflow
+## Backup Workflow
 
 1. **SSH Connection** - Establishes secure connection to production server
-2. **Remote Backup** - Executes pg_dump with plain SQL format and gzip compression
+2. **Remote Backup** - Executes pg_dump with custom format and compression
 3. **File Transfer** - Downloads backup via rsync with compression and resume support
 4. **S3 Upload** - Uploads to S3-compatible storage with multipart support
 5. **Cleanup** - Removes temporary files and keeps only N most recent backups
+
+## Restore Workflow
+
+1. **Backup Selection** - Lists or selects backup from S3 storage
+2. **S3 Download** - Downloads backup file from S3 to local system
+3. **SSH Connection** - Establishes connection to target server
+4. **File Transfer** - Uploads backup to target server via rsync
+5. **Database Restore** - Executes pg_restore with configurable options
+6. **Cleanup** - Removes temporary files from both local and remote systems
 
 ## Cron Example
 

@@ -18,10 +18,11 @@ import (
 )
 
 type S3Client struct {
-	config   *S3Config
-	client   *s3.Client
-	uploader *manager.Uploader
-	logger   *slog.Logger
+	config     *S3Config
+	client     *s3.Client
+	uploader   *manager.Uploader
+	downloader *manager.Downloader
+	logger     *slog.Logger
 }
 
 func NewS3Client(s3Config *S3Config, logger *slog.Logger) (*S3Client, error) {
@@ -58,11 +59,17 @@ func NewS3Client(s3Config *S3Config, logger *slog.Logger) (*S3Client, error) {
 		u.Concurrency = 3
 	})
 
+	downloader := manager.NewDownloader(client, func(d *manager.Downloader) {
+		d.PartSize = 100 * 1024 * 1024
+		d.Concurrency = 3
+	})
+
 	return &S3Client{
-		config:   s3Config,
-		client:   client,
-		uploader: uploader,
-		logger:   logger,
+		config:     s3Config,
+		client:     client,
+		uploader:   uploader,
+		downloader: downloader,
+		logger:     logger,
 	}, nil
 }
 
@@ -158,7 +165,7 @@ func (s *S3Client) CleanupOldBackups(ctx context.Context, retentionCount int) er
 
 		for _, obj := range page.Contents {
 			// Only include files that match our backup pattern
-			if obj.Key != nil && strings.Contains(*obj.Key, "pg_backup_") {
+			if obj.Key != nil && strings.HasPrefix(filepath.Base(*obj.Key), "backup-") && strings.HasSuffix(*obj.Key, ".dump") {
 				allBackups = append(allBackups, backupInfo{
 					Key:          obj.Key,
 					LastModified: obj.LastModified,
@@ -275,3 +282,154 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 func (pr *progressReader) Seek(offset int64, whence int) (int64, error) {
 	return pr.reader.Seek(offset, whence)
 }
+
+func (s *S3Client) DownloadFile(ctx context.Context, key string, localPath string, progressFn func(int64)) error {
+	s.logger.Info("Starting S3 download",
+		slog.String("bucket", s.config.Bucket),
+		slog.String("key", key),
+		slog.String("local_path", localPath))
+
+	// Create the local file
+	file, err := os.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to create local file: %w", err)
+	}
+	defer file.Close()
+
+	// Get object size for progress tracking
+	headOutput, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.config.Bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get object metadata: %w", err)
+	}
+
+	totalSize := *headOutput.ContentLength
+	s.logger.Info("Object size", slog.Int64("bytes", totalSize))
+
+	// Download the file with progress tracking
+	numBytes, err := s.downloader.Download(ctx, file, &s3.GetObjectInput{
+		Bucket: aws.String(s.config.Bucket),
+		Key:    aws.String(key),
+	}, func(d *manager.Downloader) {
+		d.PartSize = 100 * 1024 * 1024
+		d.Concurrency = 3
+	})
+
+	if err != nil {
+		return fmt.Errorf("S3 download failed: %w", err)
+	}
+
+	// Call progress function with final size
+	if progressFn != nil {
+		progressFn(numBytes)
+	}
+
+	s.logger.Info("S3 download completed successfully",
+		slog.String("path", localPath),
+		slog.Int64("size", numBytes))
+
+	return nil
+}
+
+func (s *S3Client) GetLatestBackup(ctx context.Context) (string, error) {
+	s.logger.Info("Getting latest backup from S3")
+
+	prefix := s.config.Prefix
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	// List all backup objects
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.config.Bucket),
+		Prefix: aws.String(prefix),
+	})
+
+	var latestBackup *types.Object
+	var latestTime time.Time
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return "", fmt.Errorf("failed to list backups: %w", err)
+		}
+
+		for _, obj := range page.Contents {
+			// Only include backup files
+			if obj.Key != nil && strings.Contains(*obj.Key, "backup_") && strings.HasSuffix(*obj.Key, ".dump") {
+				if obj.LastModified != nil && obj.LastModified.After(latestTime) {
+					latestTime = *obj.LastModified
+					latestBackup = &obj
+				}
+			}
+		}
+	}
+
+	if latestBackup == nil {
+		return "", fmt.Errorf("no backups found in S3")
+	}
+
+	s.logger.Info("Found latest backup",
+		slog.String("key", *latestBackup.Key),
+		slog.Time("modified", *latestBackup.LastModified))
+
+	return *latestBackup.Key, nil
+}
+
+func (s *S3Client) ListBackups(ctx context.Context) ([]string, error) {
+	s.logger.Info("Listing all backups from S3")
+
+	prefix := s.config.Prefix
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	// List all backup objects
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.config.Bucket),
+		Prefix: aws.String(prefix),
+	})
+
+	type backupInfo struct {
+		Key          string
+		LastModified time.Time
+	}
+	var backups []backupInfo
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list backups: %w", err)
+		}
+
+		for _, obj := range page.Contents {
+			// Only include backup files
+			if obj.Key != nil && strings.Contains(*obj.Key, "backup_") && strings.HasSuffix(*obj.Key, ".dump") {
+				backups = append(backups, backupInfo{
+					Key:          *obj.Key,
+					LastModified: *obj.LastModified,
+				})
+			}
+		}
+	}
+
+	// Sort by modification time (newest first)
+	for i := 0; i < len(backups)-1; i++ {
+		for j := i + 1; j < len(backups); j++ {
+			if backups[i].LastModified.Before(backups[j].LastModified) {
+				backups[i], backups[j] = backups[j], backups[i]
+			}
+		}
+	}
+
+	// Convert to string slice
+	result := make([]string, len(backups))
+	for i, backup := range backups {
+		result[i] = backup.Key
+	}
+
+	return result, nil
+}
+

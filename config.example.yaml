@@ -41,6 +41,39 @@ timeouts:
   transfer: "1h"             # File transfer timeout
   s3_upload: "2h"            # S3 upload timeout
 
+# Restore configuration (optional)
+restore:
+  enabled: false             # Enable/disable restore functionality
+  
+  # Optional: Control SSH usage for restore (defaults to true)
+  # use_ssh: false           # Set to false for local restore without SSH
+  
+  # Optional: Auto-install PostgreSQL client tools if missing (local restore only)
+  # auto_install: true       # Automatically install pg_restore if not found
+  
+  # Optional: SSH connection for restore target server (defaults to main SSH settings if not specified)
+  # Uncomment and configure if restoring to a different server than the backup source
+  # Note: Ignored if use_ssh is false
+  # ssh:
+  #   host: "staging-server.example.com"
+  #   port: 22
+  #   username: "restore-user"
+  #   password: "password"           # Use either password or key_path
+  #   key_path: "/home/user/.ssh/id_rsa"
+  #   known_hosts: "/home/user/.ssh/known_hosts"
+  
+  # Target PostgreSQL connection (defaults to source postgres settings if not specified)
+  target_host: ""           # Target PostgreSQL host (defaults to postgres.host)
+  target_port: 0            # Target PostgreSQL port (defaults to postgres.port)
+  target_database: ""        # Target database name (defaults to postgres.database)
+  target_username: ""        # Target PostgreSQL username (defaults to postgres.username)
+  target_password: ""        # Target PostgreSQL password (defaults to postgres.password)
+  drop_existing: false       # Drop existing database before restore
+  force_disconnect: false    # Force disconnect existing connections when dropping database
+  create_db: false          # Create database if it doesn't exist
+  owner: ""                 # Database owner (optional, used when create_db is true)
+  jobs: 1                   # Number of parallel jobs for restore (1-8)
+
 # Email notification settings (optional)
 # Requires: https://github.com/hra42/go-notification
 notification:
@@ -50,3 +83,14 @@ notification:
   from: "notifications@example.com"                    # From email address
   to: "hra42@example.com"                                  # To email address
   reply_to: "example@example.com"               # Reply-to address (optional)
+
+# Log configuration (optional)
+# Controls where and how logs are written
+log:
+  file_path: ""             # Path to log file (empty = stdout)
+  max_size: 100             # Max size in MB before rotation
+  max_backups: 3            # Max number of old log files to keep
+  max_age: 30               # Max days to retain old log files
+  compress: true            # Compress rotated log files
+  rotation_time: "daily"    # Time-based rotation: "hourly", "daily", "weekly", or duration like "24h"
+  rotation_minute: 0        # Minute to rotate (0-59, for hourly/daily/weekly rotation)

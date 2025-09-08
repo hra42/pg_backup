@@ -1,6 +1,6 @@
 module github.com/hra42/pg_backup
 
-go 1.24.6
+go 1.25
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.38.0
@@ -28,5 +28,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.33.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.37.0 // indirect
 	github.com/aws/smithy-go v1.22.5 // indirect
+	github.com/go-co-op/gocron/v2 v2.16.5 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/jonboulle/clockwork v0.5.0 // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
 	golang.org/x/sys v0.35.0 // indirect
 )

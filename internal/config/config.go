@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -17,6 +17,7 @@ type Config struct {
 	Timeouts     TimeoutConfig      `yaml:"timeouts"`
 	Notification NotificationConfig `yaml:"notification"`
 	Log          LogConfig          `yaml:"log"`
+	Cleanup      *CleanupConfig     `yaml:"cleanup"`
 }
 
 type SSHConfig struct {
@@ -46,9 +47,10 @@ type S3Config struct {
 }
 
 type BackupConfig struct {
-	TempDir        string `yaml:"temp_dir"`
-	RetentionCount int    `yaml:"retention_count"`
-	CompressionLvl int    `yaml:"compression_level"`
+	TempDir        string          `yaml:"temp_dir"`
+	RetentionCount int             `yaml:"retention_count"`
+	CompressionLvl int             `yaml:"compression_level"`
+	Schedule       *ScheduleConfig `yaml:"schedule"`
 }
 
 type TimeoutConfig struct {
@@ -59,20 +61,22 @@ type TimeoutConfig struct {
 }
 
 type RestoreConfig struct {
-	Enabled          bool       `yaml:"enabled"`
-	UseSSH           *bool      `yaml:"use_ssh"`        // Optional: explicitly enable/disable SSH (nil = auto, true = use SSH, false = local)
-	AutoInstall      bool       `yaml:"auto_install"`   // Auto-install PostgreSQL client if missing (local restore only)
-	SSH              *SSHConfig `yaml:"ssh"`           // Optional SSH settings for restore target
-	TargetHost       string     `yaml:"target_host"`
-	TargetPort       int        `yaml:"target_port"`
-	TargetDatabase   string     `yaml:"target_database"`
-	TargetUsername   string     `yaml:"target_username"`
-	TargetPassword   string     `yaml:"target_password"`
-	DropExisting     bool       `yaml:"drop_existing"`
-	ForceDisconnect  bool       `yaml:"force_disconnect"` // Force disconnect existing connections when dropping database
-	CreateDB         bool       `yaml:"create_db"`
-	Owner            string     `yaml:"owner"`
-	Jobs             int        `yaml:"jobs"`
+	Enabled          bool            `yaml:"enabled"`
+	UseSSH           *bool           `yaml:"use_ssh"`        // Optional: explicitly enable/disable SSH (nil = auto, true = use SSH, false = local)
+	AutoInstall      bool            `yaml:"auto_install"`   // Auto-install PostgreSQL client if missing (local restore only)
+	SSH              *SSHConfig      `yaml:"ssh"`           // Optional SSH settings for restore target
+	TargetHost       string          `yaml:"target_host"`
+	TargetPort       int             `yaml:"target_port"`
+	TargetDatabase   string          `yaml:"target_database"`
+	TargetUsername   string          `yaml:"target_username"`
+	TargetPassword   string          `yaml:"target_password"`
+	DropExisting     bool            `yaml:"drop_existing"`
+	ForceDisconnect  bool            `yaml:"force_disconnect"` // Force disconnect existing connections when dropping database
+	CreateDB         bool            `yaml:"create_db"`
+	Owner            string          `yaml:"owner"`
+	Jobs             int             `yaml:"jobs"`
+	Schedule         *ScheduleConfig `yaml:"schedule"`
+	BackupKey        string          `yaml:"backup_key"` // Specific backup key to restore (optional)
 }
 
 type NotificationConfig struct {
@@ -92,6 +96,17 @@ type LogConfig struct {
 	Compress       bool   `yaml:"compress"`         // Whether to compress rotated files
 	RotationTime   string `yaml:"rotation_time"`    // Time-based rotation: "hourly", "daily", "weekly", or duration like "24h"
 	RotationMinute int    `yaml:"rotation_minute"`  // Minute to rotate (0-59, for hourly/daily/weekly rotation)
+}
+
+type ScheduleConfig struct {
+	Enabled    bool   `yaml:"enabled"`      // Enable scheduled task
+	Type       string `yaml:"type"`         // Schedule type: "cron", "interval", "daily", "weekly", "monthly"
+	Expression string `yaml:"expression"`   // Schedule expression based on type
+	RunOnStart bool   `yaml:"run_on_start"` // Run task immediately when scheduler starts
+}
+
+type CleanupConfig struct {
+	Schedule *ScheduleConfig `yaml:"schedule"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -267,5 +282,43 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate backup schedule if present
+	if c.Backup.Schedule != nil && c.Backup.Schedule.Enabled {
+		if err := validateSchedule(c.Backup.Schedule, "backup"); err != nil {
+			return err
+		}
+	}
+
+	// Validate restore schedule if present
+	if c.Restore.Schedule != nil && c.Restore.Schedule.Enabled {
+		if err := validateSchedule(c.Restore.Schedule, "restore"); err != nil {
+			return err
+		}
+	}
+
+	// Validate cleanup schedule if present
+	if c.Cleanup != nil && c.Cleanup.Schedule != nil && c.Cleanup.Schedule.Enabled {
+		if err := validateSchedule(c.Cleanup.Schedule, "cleanup"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateSchedule(s *ScheduleConfig, taskName string) error {
+	if s.Type == "" {
+		return fmt.Errorf("%s schedule type is required when scheduling is enabled", taskName)
+	}
+	if s.Expression == "" {
+		return fmt.Errorf("%s schedule expression is required when scheduling is enabled", taskName)
+	}
+	// Validate schedule type
+	switch s.Type {
+	case "cron", "interval", "daily", "weekly", "monthly":
+		// Valid types
+	default:
+		return fmt.Errorf("invalid %s schedule type: %s (must be cron, interval, daily, weekly, or monthly)", taskName, s.Type)
+	}
 	return nil
 }

@@ -1,4 +1,4 @@
-package main
+package rsync
 
 import (
 	"bufio"
@@ -12,16 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hra42/pg_backup/internal/config"
 )
 
 type RsyncClient struct {
-	config *SSHConfig
+	config *config.SSHConfig
 	logger *slog.Logger
 }
 
-func NewRsyncClient(config *SSHConfig, logger *slog.Logger) *RsyncClient {
+func NewRsyncClient(cfg *config.SSHConfig, logger *slog.Logger) *RsyncClient {
 	return &RsyncClient{
-		config: config,
+		config: cfg,
 		logger: logger,
 	}
 }

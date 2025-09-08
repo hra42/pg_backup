@@ -1,4 +1,4 @@
-package main
+package backup
 
 import (
 	"context"
@@ -10,34 +10,38 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/hra42/pg_backup/internal/config"
+	"github.com/hra42/pg_backup/internal/notification"
+	"github.com/hra42/pg_backup/internal/rsync"
+	"github.com/hra42/pg_backup/internal/ssh"
+	"github.com/hra42/pg_backup/internal/storage"
 )
 
 type BackupManager struct {
-	config             *Config
-	sshClient          *SSHClient
-	s3Client           *S3Client
-	notificationClient *NotificationClient
+	config             *config.Config
+	sshClient          *ssh.SSHClient
+	s3Client           *storage.S3Client
+	notificationClient *notification.NotificationClient
 	logger             *slog.Logger
 	cancelFunc         context.CancelFunc
 	backupSize         int64
 }
 
-func NewBackupManager(config *Config, logger *slog.Logger) (*BackupManager, error) {
-	sshClient, err := NewSSHClient(&config.SSH, logger)
+func NewBackupManager(cfg *config.Config, logger *slog.Logger) (*BackupManager, error) {
+	sshClient, err := ssh.NewSSHClient(&cfg.SSH, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSH client: %w", err)
 	}
 
-	s3Client, err := NewS3Client(&config.S3, logger)
+	s3Client, err := storage.NewS3Client(&cfg.S3, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create S3 client: %w", err)
 	}
 
-	notificationClient := NewNotificationClient(&config.Notification, logger)
+	notificationClient := notification.NewNotificationClient(&cfg.Notification, logger)
 
 	return &BackupManager{
-		config:             config,
+		config:             cfg,
 		sshClient:          sshClient,
 		s3Client:           s3Client,
 		notificationClient: notificationClient,
@@ -64,17 +68,17 @@ func (bm *BackupManager) Run(ctx context.Context, dryRun bool) error {
 	localBackupPath := filepath.Join(os.TempDir(), backupFileName)
 
 	if err := bm.connectSSH(); err != nil {
-		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, getBackupStage(err))
+		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, notification.GetBackupStage(err))
 		return err
 	}
 
 	if err := bm.createRemoteBackup(remoteBackupPath); err != nil {
-		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, getBackupStage(err))
+		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, notification.GetBackupStage(err))
 		return err
 	}
 
 	if err := bm.transferBackup(remoteBackupPath, localBackupPath); err != nil {
-		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, getBackupStage(err))
+		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, notification.GetBackupStage(err))
 		return err
 	}
 
@@ -84,7 +88,7 @@ func (bm *BackupManager) Run(ctx context.Context, dryRun bool) error {
 	}
 
 	if err := bm.uploadToS3(ctx, localBackupPath); err != nil {
-		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, getBackupStage(err))
+		bm.notificationClient.SendBackupFailure(bm.config.Postgres.Database, err, notification.GetBackupStage(err))
 		return err
 	}
 
@@ -132,11 +136,8 @@ func (bm *BackupManager) validateConfiguration() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	_, err = bm.s3Client.client.HeadBucket(ctx, &s3.HeadBucketInput{
-		Bucket: &bm.config.S3.Bucket,
-	})
-	if err != nil {
-		return fmt.Errorf("S3 bucket validation failed: %w", err)
+	if err := bm.s3Client.ValidateBucket(ctx); err != nil {
+		return err
 	}
 
 	bm.logger.Info("Configuration validation successful")
@@ -211,7 +212,7 @@ func (bm *BackupManager) transferBackup(remoteBackupPath, localBackupPath string
 		slog.String("local", localBackupPath))
 
 	// Use rsync for file transfer
-	rsyncClient := NewRsyncClient(&bm.config.SSH, bm.logger)
+	rsyncClient := rsync.NewRsyncClient(&bm.config.SSH, bm.logger)
 	
 	lastProgress := time.Now()
 	err := rsyncClient.DownloadFile(remoteBackupPath, localBackupPath, bm.config.Timeouts.Transfer, 

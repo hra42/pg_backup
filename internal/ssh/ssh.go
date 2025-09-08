@@ -1,4 +1,4 @@
-package main
+package ssh
 
 import (
 	"bytes"
@@ -9,17 +9,18 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
+	"github.com/hra42/pg_backup/internal/config"
 )
 
 type SSHClient struct {
-	config *SSHConfig
+	config *config.SSHConfig
 	client *ssh.Client
 	logger *slog.Logger
 }
 
-func NewSSHClient(config *SSHConfig, logger *slog.Logger) (*SSHClient, error) {
+func NewSSHClient(cfg *config.SSHConfig, logger *slog.Logger) (*SSHClient, error) {
 	return &SSHClient{
-		config: config,
+		config: cfg,
 		logger: logger,
 	}, nil
 }

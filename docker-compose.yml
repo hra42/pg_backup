@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  pg-backup-scheduler:
+    build: .
+    image: pg-backup:latest
+    container_name: pg-backup-scheduler
+    restart: unless-stopped
+    
+    # Run in scheduler mode
+    command: ["-schedule", "-config", "/config/config.yaml"]
+    
+    # Uncomment for single backup run
+    # command: ["-config", "/config/config.yaml"]
+    
+    # Uncomment for restore mode
+    # command: ["-restore", "-config", "/config/config.yaml"]
+    
+    volumes:
+      # Configuration file
+      - ./config.yaml:/config/config.yaml:ro
+      
+      # SSH keys (if using key authentication)
+      - ~/.ssh:/home/pgbackup/.ssh:ro
+      
+      # Backup storage (optional, for local backups)
+      - ./backups:/backup
+      
+      # Logs (optional)
+      - ./logs:/logs
+      
+      # Known hosts file (optional)
+      # - ~/.ssh/known_hosts:/home/pgbackup/.ssh/known_hosts:ro
+    
+    environment:
+      # Override log settings
+      - LOG_LEVEL=info
+      - JSON_LOGS=false
+      
+      # Timezone (important for scheduling)
+      - TZ=UTC
+      
+      # Optional: Override config values with environment variables
+      # - PG_BACKUP_SSH_HOST=prod-server.example.com
+      # - PG_BACKUP_SSH_PORT=22
+      # - PG_BACKUP_SSH_USERNAME=backup-user
+      # - PG_BACKUP_POSTGRES_DATABASE=production_db
+      # - PG_BACKUP_S3_ENDPOINT=https://s3.amazonaws.com
+      # - PG_BACKUP_S3_BUCKET=my-backup-bucket
+    
+    # Network mode - use host network if connecting to local PostgreSQL
+    # network_mode: host
+    
+    # Or use bridge network (default)
+    networks:
+      - pg-backup-net
+    
+    # Resource limits (optional)
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+networks:
+  pg-backup-net:
+    driver: bridge
+
+# Example volume definitions for persistent storage
+volumes:
+  backup-data:
+    driver: local
+  log-data:
+    driver: local

@@ -1,4 +1,4 @@
-package main
+package notification
 
 import (
 	"context"
@@ -7,16 +7,18 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/hra42/pg_backup/internal/config"
 )
 
 type NotificationClient struct {
-	config *NotificationConfig
+	config *config.NotificationConfig
 	logger *slog.Logger
 }
 
-func NewNotificationClient(config *NotificationConfig, logger *slog.Logger) *NotificationClient {
+func NewNotificationClient(cfg *config.NotificationConfig, logger *slog.Logger) *NotificationClient {
 	return &NotificationClient{
-		config: config,
+		config: cfg,
 		logger: logger,
 	}
 }
@@ -161,7 +163,7 @@ func (n *NotificationClient) SendRestoreFailure(database string, err error, stag
 	return n.sendNotification(subject, text)
 }
 
-func getBackupStage(err error) string {
+func GetBackupStage(err error) string {
 	errStr := err.Error()
 	if strings.Contains(errStr, "exit code 2") || strings.Contains(errStr, "SSH") {
 		return "SSH Connection"

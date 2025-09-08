@@ -14,6 +14,11 @@ import (
 	"time"
 
 	"github.com/DeRuina/timberjack"
+	"github.com/hra42/pg_backup/internal/backup"
+	"github.com/hra42/pg_backup/internal/config"
+	"github.com/hra42/pg_backup/internal/restore"
+	"github.com/hra42/pg_backup/internal/scheduler"
+	"github.com/hra42/pg_backup/internal/storage"
 )
 
 var (
@@ -33,6 +38,7 @@ func main() {
 		listBackups   = flag.Bool("list-backups", false, "List available backups")
 		backupKey     = flag.String("backup-key", "", "Specific backup key to restore (optional, uses latest if not specified)")
 		cleanupOnly   = flag.Bool("cleanup", false, "Run cleanup only (remove old backups based on retention policy)")
+		scheduleMode  = flag.Bool("schedule", false, "Run in scheduled mode using gocron")
 	)
 	flag.Parse()
 
@@ -44,13 +50,13 @@ func main() {
 		os.Exit(0)
 	}
 
-	config, err := LoadConfig(*configPath)
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
 		os.Exit(1)
 	}
 
-	logger := setupLogger(*logLevel, *jsonLogs, config)
+	logger := setupLogger(*logLevel, *jsonLogs, cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -72,14 +78,14 @@ func main() {
 	if *cleanupOnly {
 		logger.Info("Running cleanup only mode")
 		
-		s3Client, err := NewS3Client(&config.S3, logger)
+		s3Client, err := storage.NewS3Client(&cfg.S3, logger)
 		if err != nil {
 			logger.Error("Failed to initialize S3 client", slog.String("error", err.Error()))
 			os.Exit(1)
 		}
 		
-		logger.Info("Starting backup cleanup", slog.Int("retention_count", config.Backup.RetentionCount))
-		if err := s3Client.CleanupOldBackups(ctx, config.Backup.RetentionCount); err != nil {
+		logger.Info("Starting backup cleanup", slog.Int("retention_count", cfg.Backup.RetentionCount))
+		if err := s3Client.CleanupOldBackups(ctx, cfg.Backup.RetentionCount); err != nil {
 			logger.Error("Cleanup failed", slog.String("error", err.Error()))
 			os.Exit(1)
 		}
@@ -90,12 +96,12 @@ func main() {
 
 	// Handle restore mode
 	if *restoreMode || *listBackups {
-		if !config.Restore.Enabled && !*listBackups {
+		if !cfg.Restore.Enabled && !*listBackups {
 			logger.Error("Restore feature is not enabled in configuration")
 			os.Exit(1)
 		}
 
-		restoreManager, err := NewRestoreManager(config, logger)
+		restoreManager, err := restore.NewRestoreManager(cfg, logger)
 		if err != nil {
 			logger.Error("Failed to initialize restore manager", slog.String("error", err.Error()))
 			os.Exit(1)
@@ -138,13 +144,43 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Normal backup mode
+	// Check if we should run in scheduled mode
+	hasScheduledTasks := (cfg.Backup.Schedule != nil && cfg.Backup.Schedule.Enabled) ||
+		(cfg.Restore.Schedule != nil && cfg.Restore.Schedule.Enabled) ||
+		(cfg.Cleanup != nil && cfg.Cleanup.Schedule != nil && cfg.Cleanup.Schedule.Enabled)
+
+	if *scheduleMode || hasScheduledTasks {
+		if !hasScheduledTasks {
+			logger.Error("Schedule mode requested but no scheduled tasks are configured")
+			os.Exit(1)
+		}
+
+		logger.Info("Starting pg_backup in scheduled mode",
+			slog.String("version", version),
+			slog.String("config", *configPath))
+
+		scheduler, err := scheduler.NewScheduler(cfg, logger)
+		if err != nil {
+			logger.Error("Failed to initialize scheduler", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+
+		if err := scheduler.Start(ctx); err != nil {
+			logger.Error("Scheduler failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+
+		logger.Info("Scheduler stopped")
+		os.Exit(0)
+	}
+
+	// Normal backup mode (single run)
 	logger.Info("Starting pg_backup",
 		slog.String("version", version),
 		slog.String("config", *configPath),
 		slog.Bool("dry_run", *dryRun))
 
-	backupManager, err := NewBackupManager(config, logger)
+	backupManager, err := backup.NewBackupManager(cfg, logger)
 	if err != nil {
 		logger.Error("Failed to initialize backup manager", slog.String("error", err.Error()))
 		os.Exit(1)
@@ -179,7 +215,7 @@ func main() {
 	os.Exit(0)
 }
 
-func setupLogger(level string, jsonFormat bool, config *Config) *slog.Logger {
+func setupLogger(level string, jsonFormat bool, cfg *config.Config) *slog.Logger {
 	var logLevel slog.Level
 	switch level {
 	case "debug":
@@ -202,9 +238,9 @@ func setupLogger(level string, jsonFormat bool, config *Config) *slog.Logger {
 	var writer io.Writer = os.Stdout
 	
 	// If log file path is configured, set up file logging with rotation
-	if config.Log.FilePath != "" {
+	if cfg.Log.FilePath != "" {
 		// Ensure log directory exists
-		logDir := filepath.Dir(config.Log.FilePath)
+		logDir := filepath.Dir(cfg.Log.FilePath)
 		if err := os.MkdirAll(logDir, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to create log directory %s: %v\n", logDir, err)
 			os.Exit(1)
@@ -212,32 +248,32 @@ func setupLogger(level string, jsonFormat bool, config *Config) *slog.Logger {
 		
 		// Configure timberjack for log rotation
 		tj := &timberjack.Logger{
-			Filename:   config.Log.FilePath,
-			MaxSize:    config.Log.MaxSize,    // megabytes
-			MaxBackups: config.Log.MaxBackups, // number of backups
-			MaxAge:     config.Log.MaxAge,     // days
-			Compress:   config.Log.Compress,   // compress rotated files
+			Filename:   cfg.Log.FilePath,
+			MaxSize:    cfg.Log.MaxSize,    // megabytes
+			MaxBackups: cfg.Log.MaxBackups, // number of backups
+			MaxAge:     cfg.Log.MaxAge,     // days
+			Compress:   cfg.Log.Compress,   // compress rotated files
 			LocalTime:  true,                  // use local time for rotation
 		}
 		
 		// Configure time-based rotation if specified
-		if config.Log.RotationTime != "" {
-			switch config.Log.RotationTime {
+		if cfg.Log.RotationTime != "" {
+			switch cfg.Log.RotationTime {
 			case "hourly":
 				tj.RotationInterval = time.Hour
 				// Rotate at specific minute of each hour
-				if config.Log.RotationMinute >= 0 && config.Log.RotationMinute <= 59 {
-					tj.RotateAtMinutes = []int{config.Log.RotationMinute}
+				if cfg.Log.RotationMinute >= 0 && cfg.Log.RotationMinute <= 59 {
+					tj.RotateAtMinutes = []int{cfg.Log.RotationMinute}
 				}
 			case "daily":
 				// Rotate at specific time each day (00:00 by default)
-				rotateTime := fmt.Sprintf("%02d:%02d", 0, config.Log.RotationMinute)
+				rotateTime := fmt.Sprintf("%02d:%02d", 0, cfg.Log.RotationMinute)
 				tj.RotateAt = []string{rotateTime}
 			case "weekly":
 				tj.RotationInterval = 7 * 24 * time.Hour
 			default:
 				// Try to parse as duration
-				if d, err := time.ParseDuration(config.Log.RotationTime); err == nil {
+				if d, err := time.ParseDuration(cfg.Log.RotationTime); err == nil {
 					tj.RotationInterval = d
 				} else {
 					// Default to daily if invalid

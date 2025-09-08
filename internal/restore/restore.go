@@ -1,4 +1,4 @@
-package main
+package restore
 
 import (
 	"context"
@@ -10,34 +10,40 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/hra42/pg_backup/internal/config"
+	"github.com/hra42/pg_backup/internal/notification"
+	"github.com/hra42/pg_backup/internal/rsync"
+	"github.com/hra42/pg_backup/internal/ssh"
+	"github.com/hra42/pg_backup/internal/storage"
 )
 
 type RestoreManager struct {
-	config             *Config
-	sshClient          *SSHClient
-	s3Client           *S3Client
-	notificationClient *NotificationClient
+	config             *config.Config
+	sshClient          *ssh.SSHClient
+	s3Client           *storage.S3Client
+	notificationClient *notification.NotificationClient
 	logger             *slog.Logger
 }
 
-func NewRestoreManager(config *Config, logger *slog.Logger) (*RestoreManager, error) {
-	var sshClient *SSHClient
+func NewRestoreManager(cfg *config.Config, logger *slog.Logger) (*RestoreManager, error) {
+	var sshClient *ssh.SSHClient
 	var err error
 	
 	// Check if SSH is needed for restore
 	useSSH := true
-	if config.Restore.UseSSH != nil {
-		useSSH = *config.Restore.UseSSH
+	if cfg.Restore.UseSSH != nil {
+		useSSH = *cfg.Restore.UseSSH
 	}
 	
 	if useSSH {
 		// Use restore SSH config if provided, otherwise use backup SSH config
-		sshConfig := config.Restore.SSH
+		sshConfig := cfg.Restore.SSH
 		if sshConfig == nil {
-			sshConfig = &config.SSH
+			sshConfig = &cfg.SSH
 		}
 		
-		sshClient, err = NewSSHClient(sshConfig, logger)
+		sshClient, err = ssh.NewSSHClient(sshConfig, logger)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create SSH client for restore: %w", err)
 		}
@@ -46,15 +52,15 @@ func NewRestoreManager(config *Config, logger *slog.Logger) (*RestoreManager, er
 		sshClient = nil
 	}
 
-	s3Client, err := NewS3Client(&config.S3, logger)
+	s3Client, err := storage.NewS3Client(&cfg.S3, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create S3 client: %w", err)
 	}
 
-	notificationClient := NewNotificationClient(&config.Notification, logger)
+	notificationClient := notification.NewNotificationClient(&cfg.Notification, logger)
 
 	return &RestoreManager{
-		config:             config,
+		config:             cfg,
 		sshClient:          sshClient,
 		s3Client:           s3Client,
 		notificationClient: notificationClient,
@@ -211,7 +217,7 @@ func (rm *RestoreManager) transferToRemote(localPath, remotePath string) error {
 	if sshConfig == nil {
 		sshConfig = &rm.config.SSH
 	}
-	rsyncClient := NewRsyncClient(sshConfig, rm.logger)
+	rsyncClient := rsync.NewRsyncClient(sshConfig, rm.logger)
 	
 	lastProgress := time.Now()
 	err := rsyncClient.UploadFile(localPath, remotePath, rm.config.Timeouts.Transfer, 

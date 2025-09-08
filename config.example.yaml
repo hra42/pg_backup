@@ -33,6 +33,31 @@ backup:
   temp_dir: "/tmp"           # Temporary directory on prod server
   retention_count: 7         # Number of backups to keep
   compression_level: 6       # Compression level (0-9, 0=none, 9=max)
+  
+  # Schedule configuration (optional)
+  # Enable to run backups on a schedule
+  # schedule:
+  #   enabled: true
+  #   type: "daily"           # Options: cron, interval, daily, weekly, monthly
+  #   expression: "02:00"     # Expression format depends on type
+  #   run_on_start: false     # Run backup immediately when scheduler starts
+  #   
+  #   # Examples for different schedule types:
+  #   # Cron expression:
+  #   # type: "cron"
+  #   # expression: "0 2 * * *"  # Daily at 2 AM
+  #   
+  #   # Fixed interval:
+  #   # type: "interval"
+  #   # expression: "6h"         # Every 6 hours
+  #   
+  #   # Weekly:
+  #   # type: "weekly"
+  #   # expression: "Monday 02:00"  # Every Monday at 2 AM
+  #   
+  #   # Monthly:
+  #   # type: "monthly"
+  #   # expression: "15 02:00"   # 15th of each month at 2 AM
 
 # Operation timeouts
 timeouts:
@@ -73,6 +98,15 @@ restore:
   create_db: false          # Create database if it doesn't exist
   owner: ""                 # Database owner (optional, used when create_db is true)
   jobs: 1                   # Number of parallel jobs for restore (1-8)
+  # backup_key: ""          # Specific backup key to restore (optional, uses latest if not specified)
+  
+  # Schedule configuration (optional)
+  # Enable to run restore tests on a schedule (useful for disaster recovery validation)
+  # schedule:
+  #   enabled: false
+  #   type: "weekly"
+  #   expression: "Sunday 03:00"  # Weekly restore test on Sunday at 3 AM
+  #   run_on_start: false
 
 # Email notification settings (optional)
 # Requires: https://github.com/hra42/go-notification
@@ -94,3 +128,12 @@ log:
   compress: true            # Compress rotated log files
   rotation_time: "daily"    # Time-based rotation: "hourly", "daily", "weekly", or duration like "24h"
   rotation_minute: 0        # Minute to rotate (0-59, for hourly/daily/weekly rotation)
+
+# Cleanup configuration (optional)
+# Schedule cleanup independently from backups
+# cleanup:
+#   schedule:
+#     enabled: false
+#     type: "daily"
+#     expression: "04:00"     # Daily cleanup at 4 AM
+#     run_on_start: false

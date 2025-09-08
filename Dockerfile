@@ -30,26 +30,18 @@ RUN apk --no-cache add \
     postgresql-client \
     tzdata
 
-# Create non-root user
-RUN addgroup -g 1000 -S pgbackup && \
-    adduser -u 1000 -S pgbackup -G pgbackup
-
 # Create necessary directories
-RUN mkdir -p /home/pgbackup/.ssh /config /backup /logs && \
-    chown -R pgbackup:pgbackup /home/pgbackup /config /backup /logs
+RUN mkdir -p /root/.ssh /config /backup /logs
 
 # Copy binary from builder
 COPY --from=builder /app/pg_backup /usr/local/bin/pg_backup
 RUN chmod +x /usr/local/bin/pg_backup
 
-# Switch to non-root user
-USER pgbackup
-
 # Set working directory
-WORKDIR /home/pgbackup
+WORKDIR /root
 
 # Volume for configuration and SSH keys
-VOLUME ["/config", "/home/pgbackup/.ssh", "/backup", "/logs"]
+VOLUME ["/config", "/root/.ssh", "/backup", "/logs"]
 
 # Default environment variables
 ENV CONFIG_PATH=/config/config.yaml \

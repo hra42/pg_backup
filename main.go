@@ -145,17 +145,19 @@ func main() {
 	}
 
 	// Check if we should run in scheduled mode
-	if *scheduleMode || cfg.Schedule.Enabled {
-		if !cfg.Schedule.Enabled {
-			logger.Error("Schedule mode requested but scheduling is not enabled in configuration")
+	hasScheduledTasks := (cfg.Backup.Schedule != nil && cfg.Backup.Schedule.Enabled) ||
+		(cfg.Restore.Schedule != nil && cfg.Restore.Schedule.Enabled) ||
+		(cfg.Cleanup != nil && cfg.Cleanup.Schedule != nil && cfg.Cleanup.Schedule.Enabled)
+
+	if *scheduleMode || hasScheduledTasks {
+		if !hasScheduledTasks {
+			logger.Error("Schedule mode requested but no scheduled tasks are configured")
 			os.Exit(1)
 		}
 
 		logger.Info("Starting pg_backup in scheduled mode",
 			slog.String("version", version),
-			slog.String("config", *configPath),
-			slog.String("schedule_type", cfg.Schedule.Type),
-			slog.String("schedule_expression", cfg.Schedule.Expression))
+			slog.String("config", *configPath))
 
 		scheduler, err := scheduler.NewScheduler(cfg, logger)
 		if err != nil {

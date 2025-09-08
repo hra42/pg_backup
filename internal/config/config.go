@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -17,6 +17,7 @@ type Config struct {
 	Timeouts     TimeoutConfig      `yaml:"timeouts"`
 	Notification NotificationConfig `yaml:"notification"`
 	Log          LogConfig          `yaml:"log"`
+	Schedule     ScheduleConfig     `yaml:"schedule"`
 }
 
 type SSHConfig struct {
@@ -94,6 +95,13 @@ type LogConfig struct {
 	RotationMinute int    `yaml:"rotation_minute"`  // Minute to rotate (0-59, for hourly/daily/weekly rotation)
 }
 
+type ScheduleConfig struct {
+	Enabled    bool   `yaml:"enabled"`      // Enable scheduled backups
+	Type       string `yaml:"type"`         // Schedule type: "cron", "interval", "daily", "weekly", "monthly"
+	Expression string `yaml:"expression"`   // Schedule expression based on type
+	RunOnStart bool   `yaml:"run_on_start"` // Run backup immediately when scheduler starts
+}
+
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -130,6 +138,12 @@ func LoadConfig(path string) (*Config, error) {
 			Compress:       true,
 			RotationTime:   "daily", // Default to daily rotation
 			RotationMinute: 0, // Rotate at midnight by default
+		},
+		Schedule: ScheduleConfig{
+			Enabled:    false,
+			Type:       "daily",
+			Expression: "02:00", // Default to 2 AM daily
+			RunOnStart: false,
 		},
 	}
 
@@ -264,6 +278,23 @@ func (c *Config) Validate() error {
 		}
 		if c.Notification.To == "" {
 			return fmt.Errorf("notification to address is required when notifications are enabled")
+		}
+	}
+
+	// Validate schedule config if enabled
+	if c.Schedule.Enabled {
+		if c.Schedule.Type == "" {
+			return fmt.Errorf("schedule type is required when scheduling is enabled")
+		}
+		if c.Schedule.Expression == "" {
+			return fmt.Errorf("schedule expression is required when scheduling is enabled")
+		}
+		// Validate schedule type
+		switch c.Schedule.Type {
+		case "cron", "interval", "daily", "weekly", "monthly":
+			// Valid types
+		default:
+			return fmt.Errorf("invalid schedule type: %s (must be cron, interval, daily, weekly, or monthly)", c.Schedule.Type)
 		}
 	}
 

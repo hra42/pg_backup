@@ -1,4 +1,4 @@
-package main
+package storage
 
 import (
 	"context"
@@ -10,22 +10,23 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/hra42/pg_backup/internal/config"
 )
 
 type S3Client struct {
-	config     *S3Config
+	config     *config.S3Config
 	client     *s3.Client
 	uploader   *manager.Uploader
 	downloader *manager.Downloader
 	logger     *slog.Logger
 }
 
-func NewS3Client(s3Config *S3Config, logger *slog.Logger) (*S3Client, error) {
+func NewS3Client(s3Config *config.S3Config, logger *slog.Logger) (*S3Client, error) {
 	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
 		if service == s3.ServiceID {
 			return aws.Endpoint{
@@ -37,10 +38,10 @@ func NewS3Client(s3Config *S3Config, logger *slog.Logger) (*S3Client, error) {
 		return aws.Endpoint{}, fmt.Errorf("unknown endpoint requested")
 	})
 
-	cfg, err := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion(s3Config.Region),
-		config.WithEndpointResolverWithOptions(customResolver),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion(s3Config.Region),
+		awsconfig.WithEndpointResolverWithOptions(customResolver),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			s3Config.AccessKeyID,
 			s3Config.SecretAccessKey,
 			"",
@@ -71,6 +72,16 @@ func NewS3Client(s3Config *S3Config, logger *slog.Logger) (*S3Client, error) {
 		downloader: downloader,
 		logger:     logger,
 	}, nil
+}
+
+func (s *S3Client) ValidateBucket(ctx context.Context) error {
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: &s.config.Bucket,
+	})
+	if err != nil {
+		return fmt.Errorf("S3 bucket validation failed: %w", err)
+	}
+	return nil
 }
 
 func (s *S3Client) UploadFile(ctx context.Context, localPath string, progressFn func(int64)) error {

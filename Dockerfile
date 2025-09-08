@@ -13,11 +13,12 @@ COPY go.mod go.sum ./
 # Download dependencies
 RUN go mod download
 
-# Copy source code
-COPY . .
+# Copy only Go source files
+COPY *.go ./
+COPY internal/ ./internal/
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o pg_backup .
+RUN CGO_ENABLED=0 GOOS=linux go build -installsuffix cgo -o pg_backup .
 
 # Final stage
 FROM alpine:latest

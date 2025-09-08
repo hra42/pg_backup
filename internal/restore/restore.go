@@ -531,7 +531,8 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 		rm.logger.Info("PostgreSQL client version detected", slog.String("version", currentVersion))
 	}
 	
-	// Check if pg_restore exists
+	// Check if pg_restore exists and get its path
+	pgRestorePath := ""
 	output, err := rm.executeCommand("which pg_restore || command -v pg_restore || type pg_restore 2>/dev/null", 10*time.Second)
 	if err != nil || strings.TrimSpace(output) == "" {
 		// Try common PostgreSQL installation paths
@@ -548,7 +549,8 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 			checkCmd := fmt.Sprintf("test -x %s && echo %s", path, path)
 			if output, err := rm.executeCommand(checkCmd, 5*time.Second); err == nil && strings.TrimSpace(output) != "" {
 				found = true
-				rm.logger.Info("Found pg_restore at", slog.String("path", strings.TrimSpace(output)))
+				pgRestorePath = strings.TrimSpace(output)
+				rm.logger.Info("Found pg_restore at", slog.String("path", pgRestorePath))
 				break
 			}
 		}
@@ -573,8 +575,9 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 					if err != nil || strings.TrimSpace(output) == "" {
 						return fmt.Errorf("pg_restore still not found after installation attempt")
 					}
+					pgRestorePath = strings.TrimSpace(output)
 					rm.logger.Info("PostgreSQL client tools installed successfully", 
-						slog.String("pg_restore", strings.TrimSpace(output)))
+						slog.String("pg_restore", pgRestorePath))
 				} else {
 					rm.logger.Error("pg_restore not found. Please install PostgreSQL client tools.",
 						slog.String("hint", "Install with: apt-get install postgresql-client or yum install postgresql"),
@@ -586,7 +589,8 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 			}
 		}
 	} else {
-		rm.logger.Info("Found pg_restore", slog.String("path", strings.TrimSpace(output)))
+		pgRestorePath = strings.TrimSpace(output)
+		rm.logger.Info("Found pg_restore", slog.String("path", pgRestorePath))
 	}
 
 	pgPassword := fmt.Sprintf("PGPASSWORD='%s'", rm.config.Restore.TargetPassword)
@@ -699,8 +703,9 @@ func (rm *RestoreManager) performRestore(backupPath string) error {
 	// Build pg_restore command
 	// Quote database name to handle special characters
 	restoreCmd := fmt.Sprintf(
-		"%s pg_restore -h %s -p %d -U %s -d \"%s\" --verbose --no-owner --no-privileges --no-tablespaces",
+		"%s %s -h %s -p %d -U %s -d \"%s\" --verbose --no-owner --no-privileges --no-tablespaces",
 		pgPassword,
+		pgRestorePath,
 		rm.config.Restore.TargetHost,
 		rm.config.Restore.TargetPort,
 		rm.config.Restore.TargetUsername,

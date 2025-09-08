@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/hra42/pg_backup/internal/backup"
 	"github.com/hra42/pg_backup/internal/config"
+	"github.com/hra42/pg_backup/internal/restore"
+	"github.com/hra42/pg_backup/internal/storage"
 )
 
 type Scheduler struct {
@@ -17,7 +19,9 @@ type Scheduler struct {
 	logger        *slog.Logger
 	scheduler     gocron.Scheduler
 	backupManager *backup.BackupManager
-	jobID         uuid.UUID
+	restoreManager *restore.RestoreManager
+	s3Client      *storage.S3Client
+	jobs          map[string]uuid.UUID // Map task name to job ID
 }
 
 func NewScheduler(cfg *config.Config, logger *slog.Logger) (*Scheduler, error) {
@@ -26,35 +30,92 @@ func NewScheduler(cfg *config.Config, logger *slog.Logger) (*Scheduler, error) {
 		return nil, fmt.Errorf("failed to create scheduler: %w", err)
 	}
 
-	backupManager, err := backup.NewBackupManager(cfg, logger)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize backup manager: %w", err)
+	scheduler := &Scheduler{
+		config:    cfg,
+		logger:    logger,
+		scheduler: s,
+		jobs:      make(map[string]uuid.UUID),
 	}
 
-	return &Scheduler{
-		config:        cfg,
-		logger:        logger,
-		scheduler:     s,
-		backupManager: backupManager,
-	}, nil
+	// Initialize managers as needed
+	if cfg.Backup.Schedule != nil && cfg.Backup.Schedule.Enabled {
+		backupManager, err := backup.NewBackupManager(cfg, logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize backup manager: %w", err)
+		}
+		scheduler.backupManager = backupManager
+	}
+
+	if cfg.Restore.Enabled && cfg.Restore.Schedule != nil && cfg.Restore.Schedule.Enabled {
+		restoreManager, err := restore.NewRestoreManager(cfg, logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize restore manager: %w", err)
+		}
+		scheduler.restoreManager = restoreManager
+	}
+
+	if cfg.Cleanup != nil && cfg.Cleanup.Schedule != nil && cfg.Cleanup.Schedule.Enabled {
+		s3Client, err := storage.NewS3Client(&cfg.S3, logger)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize S3 client for cleanup: %w", err)
+		}
+		scheduler.s3Client = s3Client
+	}
+
+	return scheduler, nil
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
 	s.logger.Info("Starting scheduler")
 
-	// Schedule backup job based on configuration
-	job, err := s.scheduleBackupJob()
-	if err != nil {
-		return fmt.Errorf("failed to schedule backup job: %w", err)
+	// Schedule backup job if configured
+	if s.config.Backup.Schedule != nil && s.config.Backup.Schedule.Enabled {
+		job, err := s.scheduleJob("backup", s.config.Backup.Schedule, s.runBackup)
+		if err != nil {
+			return fmt.Errorf("failed to schedule backup job: %w", err)
+		}
+		s.jobs["backup"] = job.ID()
+		s.logger.Info("Backup job scheduled",
+			slog.String("job_id", job.ID().String()),
+			slog.String("type", s.config.Backup.Schedule.Type),
+			slog.String("expression", s.config.Backup.Schedule.Expression))
 	}
 
-	s.jobID = job.ID()
-	s.logger.Info("Backup job scheduled",
-		slog.String("job_id", s.jobID.String()),
-		slog.String("schedule", s.config.Schedule.Expression))
+	// Schedule restore job if configured
+	if s.config.Restore.Enabled && s.config.Restore.Schedule != nil && s.config.Restore.Schedule.Enabled {
+		job, err := s.scheduleJob("restore", s.config.Restore.Schedule, s.runRestore)
+		if err != nil {
+			return fmt.Errorf("failed to schedule restore job: %w", err)
+		}
+		s.jobs["restore"] = job.ID()
+		s.logger.Info("Restore job scheduled",
+			slog.String("job_id", job.ID().String()),
+			slog.String("type", s.config.Restore.Schedule.Type),
+			slog.String("expression", s.config.Restore.Schedule.Expression))
+	}
+
+	// Schedule cleanup job if configured
+	if s.config.Cleanup != nil && s.config.Cleanup.Schedule != nil && s.config.Cleanup.Schedule.Enabled {
+		job, err := s.scheduleJob("cleanup", s.config.Cleanup.Schedule, s.runCleanup)
+		if err != nil {
+			return fmt.Errorf("failed to schedule cleanup job: %w", err)
+		}
+		s.jobs["cleanup"] = job.ID()
+		s.logger.Info("Cleanup job scheduled",
+			slog.String("job_id", job.ID().String()),
+			slog.String("type", s.config.Cleanup.Schedule.Type),
+			slog.String("expression", s.config.Cleanup.Schedule.Expression))
+	}
+
+	if len(s.jobs) == 0 {
+		return fmt.Errorf("no scheduled tasks configured")
+	}
 
 	// Start the scheduler
 	s.scheduler.Start()
+
+	s.logger.Info("Scheduler started",
+		slog.Int("scheduled_jobs", len(s.jobs)))
 
 	// Wait for context cancellation
 	<-ctx.Done()
@@ -63,71 +124,26 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	return s.Stop()
 }
 
-func (s *Scheduler) scheduleBackupJob() (gocron.Job, error) {
+func (s *Scheduler) scheduleJob(name string, schedule *config.ScheduleConfig, task func() error) (gocron.Job, error) {
 	// Create job definition based on schedule type
-	var jobDef gocron.JobDefinition
-
-	switch s.config.Schedule.Type {
-	case "cron":
-		jobDef = gocron.CronJob(s.config.Schedule.Expression, false)
-	case "interval":
-		duration, err := time.ParseDuration(s.config.Schedule.Expression)
-		if err != nil {
-			return nil, fmt.Errorf("invalid interval duration: %w", err)
-		}
-		jobDef = gocron.DurationJob(duration)
-	case "daily":
-		// Parse time in HH:MM format
-		t, err := time.Parse("15:04", s.config.Schedule.Expression)
-		if err != nil {
-			return nil, fmt.Errorf("invalid daily time format (expected HH:MM): %w", err)
-		}
-		jobDef = gocron.DailyJob(1, gocron.NewAtTimes(
-			gocron.NewAtTime(uint(t.Hour()), uint(t.Minute()), 0),
-		))
-	case "weekly":
-		// Parse day and time (e.g., "Monday 02:00")
-		weekday, timeStr, err := parseWeeklySchedule(s.config.Schedule.Expression)
-		if err != nil {
-			return nil, fmt.Errorf("invalid weekly schedule format: %w", err)
-		}
-		t, err := time.Parse("15:04", timeStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid time format in weekly schedule: %w", err)
-		}
-		jobDef = gocron.WeeklyJob(1, 
-			gocron.NewWeekdays(weekday),
-			gocron.NewAtTimes(
-				gocron.NewAtTime(uint(t.Hour()), uint(t.Minute()), 0),
-			))
-	case "monthly":
-		// Parse day and time (e.g., "15 02:00" for 15th at 2 AM)
-		day, timeStr, err := parseMonthlySchedule(s.config.Schedule.Expression)
-		if err != nil {
-			return nil, fmt.Errorf("invalid monthly schedule format: %w", err)
-		}
-		t, err := time.Parse("15:04", timeStr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid time format in monthly schedule: %w", err)
-		}
-		jobDef = gocron.MonthlyJob(1,
-			gocron.NewDaysOfTheMonth(day),
-			gocron.NewAtTimes(
-				gocron.NewAtTime(uint(t.Hour()), uint(t.Minute()), 0),
-			))
-	default:
-		return nil, fmt.Errorf("unsupported schedule type: %s", s.config.Schedule.Type)
+	jobDef, err := s.createJobDefinition(schedule)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create job definition for %s: %w", name, err)
 	}
 
 	// Create the job with error handling
 	job, err := s.scheduler.NewJob(
 		jobDef,
-		gocron.NewTask(s.runBackup),
-		gocron.WithName("pg_backup"),
+		gocron.NewTask(task),
+		gocron.WithName(fmt.Sprintf("pg_%s", name)),
 		gocron.WithSingletonMode(gocron.LimitModeReschedule),
 		gocron.WithEventListeners(
-			gocron.AfterJobRuns(s.afterJobRun),
-			gocron.AfterJobRunsWithError(s.afterJobError),
+			gocron.AfterJobRuns(func(jobID uuid.UUID, jobName string) {
+				s.afterJobRun(jobID, jobName, name)
+			}),
+			gocron.AfterJobRunsWithError(func(jobID uuid.UUID, jobName string, err error) {
+				s.afterJobError(jobID, jobName, name, err)
+			}),
 		),
 	)
 
@@ -136,15 +152,72 @@ func (s *Scheduler) scheduleBackupJob() (gocron.Job, error) {
 	}
 
 	// If run on start is enabled, trigger the job immediately
-	if s.config.Schedule.RunOnStart {
-		s.logger.Info("Running backup on start as configured")
+	if schedule.RunOnStart {
+		s.logger.Info(fmt.Sprintf("Running %s on start as configured", name))
 		go func() {
 			time.Sleep(2 * time.Second) // Small delay to ensure everything is initialized
-			s.runBackup()
+			if err := task(); err != nil {
+				s.logger.Error(fmt.Sprintf("Failed to run initial %s", name), 
+					slog.String("error", err.Error()))
+			}
 		}()
 	}
 
 	return job, nil
+}
+
+func (s *Scheduler) createJobDefinition(schedule *config.ScheduleConfig) (gocron.JobDefinition, error) {
+	switch schedule.Type {
+	case "cron":
+		return gocron.CronJob(schedule.Expression, false), nil
+	case "interval":
+		duration, err := time.ParseDuration(schedule.Expression)
+		if err != nil {
+			return nil, fmt.Errorf("invalid interval duration: %w", err)
+		}
+		return gocron.DurationJob(duration), nil
+	case "daily":
+		// Parse time in HH:MM format
+		t, err := time.Parse("15:04", schedule.Expression)
+		if err != nil {
+			return nil, fmt.Errorf("invalid daily time format (expected HH:MM): %w", err)
+		}
+		return gocron.DailyJob(1, gocron.NewAtTimes(
+			gocron.NewAtTime(uint(t.Hour()), uint(t.Minute()), 0),
+		)), nil
+	case "weekly":
+		// Parse day and time (e.g., "Monday 02:00")
+		weekday, timeStr, err := parseWeeklySchedule(schedule.Expression)
+		if err != nil {
+			return nil, fmt.Errorf("invalid weekly schedule format: %w", err)
+		}
+		t, err := time.Parse("15:04", timeStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid time format in weekly schedule: %w", err)
+		}
+		return gocron.WeeklyJob(1, 
+			gocron.NewWeekdays(weekday),
+			gocron.NewAtTimes(
+				gocron.NewAtTime(uint(t.Hour()), uint(t.Minute()), 0),
+			)), nil
+	case "monthly":
+		// Parse day and time (e.g., "15 02:00" for 15th at 2 AM)
+		day, timeStr, err := parseMonthlySchedule(schedule.Expression)
+		if err != nil {
+			return nil, fmt.Errorf("invalid monthly schedule format: %w", err)
+		}
+		t, err := time.Parse("15:04", timeStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid time format in monthly schedule: %w", err)
+		}
+		return gocron.MonthlyJob(1,
+			gocron.NewDaysOfTheMonth(day),
+			gocron.NewAtTimes(
+				gocron.NewAtTime(uint(t.Hour()), uint(t.Minute()), 0),
+			)), nil
+	default:
+		return nil, fmt.Errorf("unsupported schedule type: %s", schedule.Type)
+	}
 }
 
 func (s *Scheduler) runBackup() error {
@@ -166,8 +239,50 @@ func (s *Scheduler) runBackup() error {
 	return nil
 }
 
-func (s *Scheduler) afterJobRun(jobID uuid.UUID, jobName string) {
-	s.logger.Info("Backup job completed successfully",
+func (s *Scheduler) runRestore() error {
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeouts.BackupOp)
+	defer cancel()
+
+	s.logger.Info("Starting scheduled restore")
+	startTime := time.Now()
+
+	// Use backup key from config if specified, otherwise use latest
+	backupKey := s.config.Restore.BackupKey
+	
+	if err := s.restoreManager.Run(ctx, backupKey); err != nil {
+		s.logger.Error("Scheduled restore failed",
+			slog.String("error", err.Error()),
+			slog.Duration("duration", time.Since(startTime)))
+		return err
+	}
+
+	s.logger.Info("Scheduled restore completed successfully",
+		slog.Duration("duration", time.Since(startTime)))
+	return nil
+}
+
+func (s *Scheduler) runCleanup() error {
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeouts.BackupOp)
+	defer cancel()
+
+	s.logger.Info("Starting scheduled cleanup",
+		slog.Int("retention_count", s.config.Backup.RetentionCount))
+	startTime := time.Now()
+
+	if err := s.s3Client.CleanupOldBackups(ctx, s.config.Backup.RetentionCount); err != nil {
+		s.logger.Error("Scheduled cleanup failed",
+			slog.String("error", err.Error()),
+			slog.Duration("duration", time.Since(startTime)))
+		return err
+	}
+
+	s.logger.Info("Scheduled cleanup completed successfully",
+		slog.Duration("duration", time.Since(startTime)))
+	return nil
+}
+
+func (s *Scheduler) afterJobRun(jobID uuid.UUID, jobName string, taskType string) {
+	s.logger.Info(fmt.Sprintf("%s job completed successfully", taskType),
 		slog.String("job_id", jobID.String()),
 		slog.String("job_name", jobName))
 	
@@ -177,7 +292,7 @@ func (s *Scheduler) afterJobRun(jobID uuid.UUID, jobName string) {
 		if job.ID() == jobID {
 			nextRun, err := job.NextRun()
 			if err == nil {
-				s.logger.Info("Next backup scheduled",
+				s.logger.Info(fmt.Sprintf("Next %s scheduled", taskType),
 					slog.Time("next_run", nextRun))
 			}
 			break
@@ -185,8 +300,8 @@ func (s *Scheduler) afterJobRun(jobID uuid.UUID, jobName string) {
 	}
 }
 
-func (s *Scheduler) afterJobError(jobID uuid.UUID, jobName string, err error) {
-	s.logger.Error("Backup job failed",
+func (s *Scheduler) afterJobError(jobID uuid.UUID, jobName string, taskType string, err error) {
+	s.logger.Error(fmt.Sprintf("%s job failed", taskType),
 		slog.String("job_id", jobID.String()),
 		slog.String("job_name", jobName),
 		slog.String("error", err.Error()))

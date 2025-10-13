@@ -1,0 +1,111 @@
+when:
+  event:
+    - push
+    - pull_request
+    - manual
+
+steps:
+  test:
+    image: registry.hra42.com/golang:1.25.1
+    environment:
+      GOPROXY: https://go.hra42.com
+      GOSUMDB: sum.golang.org
+    commands:
+      - go mod download
+      - go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+      - go vet ./...
+
+  build-amd64:
+    image: registry.hra42.com/golang:1.25.1
+    environment:
+      GOPROXY: https://go.hra42.com
+      GOSUMDB: sum.golang.org
+    commands:
+      - apt-get update && apt-get install -y gcc
+      - CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o pg_backup-amd64 .
+    when:
+      - event: [push, manual, tag]
+
+  build-arm64:
+    image: registry.hra42.com/golang:1.25.1
+    environment:
+      GOPROXY: https://go.hra42.com
+      GOSUMDB: sum.golang.org
+    commands:
+      - apt-get update && apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++ go build -ldflags="-s -w" -trimpath -o pg_backup-arm64 .
+    when:
+      - event: [push, manual, tag]
+
+  upload-to-s3:
+    image: woodpeckerci/plugin-s3
+    settings:
+      bucket:
+        from_secret: s3_bucket
+      access_key:
+        from_secret: s3_access_key
+      secret_key:
+        from_secret: s3_secret_key
+      region:
+        from_secret: s3_region
+      endpoint:
+        from_secret: s3_endpoint
+      path_style: true
+      source: pg_backup-*
+      target: /builds/${CI_COMMIT_SHA}/
+    when:
+      event:
+        - push
+        - manual
+      branch:
+        - main
+
+  # Build and push Docker image (main branch)
+  docker-build-push-main:
+    image: woodpeckerci/plugin-docker-buildx
+    settings:
+      repo: registry.hra42.com/pg_backup
+      dockerfile: Dockerfile
+      platforms: linux/amd64,linux/arm64
+      tags:
+        - latest
+    when:
+      event:
+        - push
+        - manual
+      branch:
+        - main
+
+  # Build and push Docker image (tagged releases)
+  docker-build-push-tag:
+    image: woodpeckerci/plugin-docker-buildx
+    settings:
+      repo: registry.hra42.com/pg_backup
+      dockerfile: Dockerfile
+      platforms: linux/amd64,linux/arm64
+      tags:
+        - ${CI_COMMIT_TAG}
+        - latest
+    when:
+      event:
+        - tag
+
+  webhook-notification:
+    image: plugins/webhook
+    settings:
+      urls:
+        from_secret: webhook_url
+      content_type: application/json
+      template: |
+        {
+          "repo": "{{ repo.full_name }}",
+          "commit": "{{ build.commit }}",
+          "branch": "{{ build.branch }}",
+          "status": "{{ build.status }}",
+          "event": "{{ build.event }}",
+          "author": "{{ build.author }}",
+          "link": "{{ build.link }}",
+          "started": "{{ build.started }}",
+          "finished": "{{ build.finished }}",
+          "tag": "{{ build.tag }}"
+        }

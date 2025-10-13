@@ -16,6 +16,24 @@ A robust Go application for PostgreSQL backups and restores with strict error ha
 - **Graceful shutdown** - Handles SIGINT/SIGTERM with cleanup
 - **Dry-run mode** - Test configuration without performing actual backup
 
+## CI/CD
+
+This project uses Woodpecker CI for continuous integration and deployment. The pipeline includes:
+
+- **Testing**: Runs tests with race detection and code coverage
+- **Multi-architecture builds**: Builds binaries for amd64 and arm64
+- **S3 artifact storage**: Uploads build artifacts to S3-compatible storage
+- **Docker image publishing**: Builds and pushes multi-platform Docker images
+- **Webhook notifications**: Sends build status notifications
+
+The pipeline is triggered on:
+- Push events to the main branch
+- Pull requests
+- Manual triggers
+- Git tags (for releases)
+
+See `.woodpecker.yml` for the complete configuration.
+
 ## Installation
 
 ### Binary Build

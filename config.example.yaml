@@ -108,15 +108,15 @@ restore:
   #   expression: "Sunday 03:00"  # Weekly restore test on Sunday at 3 AM
   #   run_on_start: false
 
-# Email notification settings (optional)
-# Requires: https://github.com/hra42/go-notification
+# Webhook notification settings (optional)
+# Sends HTTP POST requests with JSON payload to the configured webhook URL
 notification:
   enabled: false                                           # Enable/disable notifications
-  binary_path: "/usr/local/bin/go-notification"          # Path to notification binary
-  api_key: "re_example"                                 # API key for notification service (example, see docs of the notification service)
-  from: "notifications@example.com"                    # From email address
-  to: "hra42@example.com"                                  # To email address
-  reply_to: "example@example.com"               # Reply-to address (optional)
+  webhook_url: "https://webhook.example.com/notifications" # Webhook URL to send notifications
+  # Optional custom headers (e.g., for authentication)
+  headers:
+    Authorization: "Bearer your-token-here"
+    X-Custom-Header: "custom-value"
 
 # Log configuration (optional)
 # Controls where and how logs are written

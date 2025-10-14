@@ -80,12 +80,9 @@ type RestoreConfig struct {
 }
 
 type NotificationConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	BinaryPath  string `yaml:"binary_path"`
-	APIKey      string `yaml:"api_key"`
-	From        string `yaml:"from"`
-	To          string `yaml:"to"`
-	ReplyTo     string `yaml:"reply_to"`
+	Enabled    bool              `yaml:"enabled"`
+	WebhookURL string            `yaml:"webhook_url"`
+	Headers    map[string]string `yaml:"headers,omitempty"`
 }
 
 type LogConfig struct {
@@ -134,8 +131,7 @@ func LoadConfig(path string) (*Config, error) {
 			Jobs:         1,
 		},
 		Notification: NotificationConfig{
-			Enabled:    false,
-			BinaryPath: "/usr/local/bin/go-notification",
+			Enabled: false,
 		},
 		Log: LogConfig{
 			FilePath:       "", // Empty means stdout
@@ -268,17 +264,8 @@ func (c *Config) Validate() error {
 
 	// Validate notification config if enabled
 	if c.Notification.Enabled {
-		if c.Notification.BinaryPath == "" {
-			c.Notification.BinaryPath = "/usr/local/bin/go-notification"
-		}
-		if c.Notification.APIKey == "" {
-			return fmt.Errorf("notification API key is required when notifications are enabled")
-		}
-		if c.Notification.From == "" {
-			return fmt.Errorf("notification from address is required when notifications are enabled")
-		}
-		if c.Notification.To == "" {
-			return fmt.Errorf("notification to address is required when notifications are enabled")
+		if c.Notification.WebhookURL == "" {
+			return fmt.Errorf("notification webhook URL is required when notifications are enabled")
 		}
 	}
 

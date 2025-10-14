@@ -10,7 +10,7 @@ A robust Go application for PostgreSQL backups and restores with strict error ha
 - **Rsync file transfer** - Fast, efficient transfer with resume capability
 - **S3-compatible storage** - Upload/download backups to/from Garage or any S3-compatible storage
 - **Automatic retention management** - Keep only the N most recent backups
-- **Email notifications** - Success/failure notifications via go-notification for both backup and restore
+- **Webhook notifications** - Success/failure notifications via HTTP POST webhooks with JSON payload for both backup and restore
 - **Progress tracking** - Real-time progress for all long-running operations
 - **Structured logging** - Clear, parseable logs with context
 - **Graceful shutdown** - Handles SIGINT/SIGTERM with cleanup
@@ -104,9 +104,9 @@ restore:
 
 notification:
   enabled: true
-  api_key: "your-api-key"
-  from: "notifications@example.com"
-  to: "admin@example.com"
+  webhook_url: "https://webhook.example.com/notifications"
+  headers:
+    Authorization: "Bearer your-token-here"
 ```
 
 ## Usage
@@ -476,7 +476,156 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 - rsync installed on local machine
 - S3-compatible storage (Garage, MinIO, AWS S3, etc.)
 - sshpass (optional, for password authentication with rsync)
-- [go-notification](https://github.com/hra42/go-notification) binary (optional, for email notifications)
+
+## Webhook Notifications
+
+pg_backup supports webhook notifications for all backup and restore operations. Notifications are sent as HTTP POST requests with JSON payloads, providing flexibility to integrate with any notification system (Slack, Discord, Microsoft Teams, custom monitoring systems, etc.).
+
+### Configuration
+
+Configure webhook notifications in your `config.yaml`:
+
+```yaml
+notification:
+  enabled: true
+  webhook_url: "https://webhook.example.com/notifications"
+  headers:
+    Authorization: "Bearer your-secret-token"
+    X-Custom-Header: "custom-value"
+```
+
+### Payload Format
+
+All webhooks send a JSON payload with the following structure:
+
+```json
+{
+  "event_type": "backup_success",
+  "database": "production_db",
+  "timestamp": "2024-01-15T10:30:00Z",
+  "duration": "5m23s",
+  "duration_ms": 323000,
+  "backup_size": 1073741824,
+  "hostname": "backup-server",
+  "version": "1.0.0"
+}
+```
+
+### Event Types
+
+#### backup_success
+Sent when a backup completes successfully.
+
+**Fields:**
+- `event_type`: `"backup_success"`
+- `database`: Database name
+- `timestamp`: ISO 8601 timestamp
+- `duration`: Human-readable duration (e.g., "5m23s")
+- `duration_ms`: Duration in milliseconds
+- `backup_size`: Backup file size in bytes
+- `hostname`: Server hostname where backup ran
+- `version`: pg_backup version
+
+#### backup_failure
+Sent when a backup fails.
+
+**Fields:**
+- `event_type`: `"backup_failure"`
+- `database`: Database name
+- `timestamp`: ISO 8601 timestamp
+- `error`: Error message
+- `stage`: Failed stage (SSH Connection, Remote Backup Creation, File Transfer, S3 Upload, Cleanup)
+- `hostname`: Server hostname
+- `version`: pg_backup version
+
+#### restore_success
+Sent when a restore completes successfully.
+
+**Fields:**
+- `event_type`: `"restore_success"`
+- `database`: Target database name
+- `timestamp`: ISO 8601 timestamp
+- `duration`: Human-readable duration
+- `duration_ms`: Duration in milliseconds
+- `backup_key`: S3 key of the restored backup
+- `hostname`: Server hostname
+- `version`: pg_backup version
+
+#### restore_failure
+Sent when a restore fails.
+
+**Fields:**
+- `event_type`: `"restore_failure"`
+- `database`: Target database name
+- `timestamp`: ISO 8601 timestamp
+- `error`: Error message
+- `stage`: Failed stage
+- `hostname`: Server hostname
+- `version`: pg_backup version
+
+### Integration Examples
+
+#### Slack Incoming Webhook
+```yaml
+notification:
+  enabled: true
+  webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+```
+
+You'll need a webhook transformer service to convert the JSON payload to Slack's format, or use a service like Zapier/Make.
+
+#### Discord Webhook
+```yaml
+notification:
+  enabled: true
+  webhook_url: "https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN"
+```
+
+Discord requires a specific JSON format, so you may need a transformation service.
+
+#### Custom Webhook Server
+You can create a simple webhook receiver that processes the notifications:
+
+```go
+// Example webhook receiver
+http.HandleFunc("/notifications", func(w http.ResponseWriter, r *http.Request) {
+    var payload map[string]interface{}
+    json.NewDecoder(r.Body).Decode(&payload)
+
+    eventType := payload["event_type"].(string)
+    database := payload["database"].(string)
+
+    // Process notification based on event type
+    switch eventType {
+    case "backup_success":
+        log.Printf("Backup succeeded for %s", database)
+    case "backup_failure":
+        log.Printf("Backup failed for %s: %s", database, payload["error"])
+    }
+
+    w.WriteHeader(http.StatusOK)
+})
+```
+
+#### HTTP Authentication
+Use custom headers for authentication:
+
+```yaml
+notification:
+  enabled: true
+  webhook_url: "https://api.example.com/webhooks"
+  headers:
+    Authorization: "Bearer your-secret-token"
+    X-API-Key: "your-api-key"
+```
+
+### Webhook Behavior
+
+- **Timeout**: Webhook requests timeout after 30 seconds
+- **Retry**: No automatic retries (failures are logged but don't affect backup/restore operations)
+- **Non-blocking**: Webhook failures don't cause backup/restore operations to fail
+- **User-Agent**: All requests include `User-Agent: pg_backup/VERSION`
+- **Content-Type**: Always `application/json`
 
 ## Security Notes
 
@@ -484,3 +633,5 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 - Use SSH key authentication when possible
 - Consider using environment variables for sensitive values
 - Never commit configuration files with credentials to version control
+- Use HTTPS for webhook URLs to ensure notification data is encrypted in transit
+- Protect webhook authentication tokens as they provide access to notification endpoints

@@ -3,7 +3,7 @@ module github.com/hra42/pg_backup
 go 1.25
 
 require (
-	github.com/DeRuina/timberjack v1.3.5
+	github.com/DeRuina/timberjack v1.4.2
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.31.0
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15
@@ -31,6 +31,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.0 // indirect
 	github.com/aws/smithy-go v1.25.0 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
+	github.com/klauspost/compress v1.17.11 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	golang.org/x/sys v0.35.0 // indirect

@@ -6,3 +6,14 @@ updates:
     interval: weekly
   assignees:
   - hra42
+  groups:
+    patch-updates:
+      patterns:
+      - "*"
+      update-types:
+      - "patch"
+    minor-updates:
+      patterns:
+      - "*"
+      update-types:
+      - "minor"
